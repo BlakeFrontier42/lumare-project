@@ -1,0 +1,46 @@
+# LUMARE — Macro Intelligence Engine Dependencies
+
+# Data & Computation
+numpy>=1.24
+pandas>=2.0
+scipy>=1.11
+
+# Technical Analysis
+ta-lib>=0.4.28
+pandas-ta>=0.3.14b0
+
+# HTTP / API Clients
+requests>=2.31
+httpx>=0.24
+websockets>=11.0
+
+# Database
+# sqlite3 — built-in, no install needed
+
+# Backtesting
+# (custom replay engine — no external framework)
+
+# Exchange APIs
+ccxt>=4.0  # Blowfin and other exchanges
+alpaca-py>=0.13  # Alpaca equities
+
+# Anthropic Claude
+anthropic>=0.25
+
+# FRED Macro Data
+fredapi>=0.5
+
+# Scheduling / Async
+# asyncio — built-in, no install needed
+schedule>=1.2
+
+# Logging
+loguru>=0.7
+
+# Web Framework / API
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.0
+
+# Environment
+python-dotenv>=1.0
