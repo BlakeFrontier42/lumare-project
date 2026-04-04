@@ -127,3 +127,29 @@ body {
 .animate-slide-up {
   animation: slideUp 400ms ease-out forwards;
 }
+
+/* Bottom sheet slide-up */
+@keyframes sheetUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.animate-sheet-up {
+  animation: sheetUp 300ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* Shimmer loading effect */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.shimmer-effect {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.8s ease-in-out infinite;
+}

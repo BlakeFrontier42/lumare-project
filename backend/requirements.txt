@@ -23,6 +23,7 @@ websockets>=11.0
 # Exchange APIs
 ccxt>=4.0  # Blowfin and other exchanges
 alpaca-py>=0.13  # Alpaca equities
+yfinance>=0.2.36  # Yahoo Finance equities data
 
 # Anthropic Claude
 anthropic>=0.25

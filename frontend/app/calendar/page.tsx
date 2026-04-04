@@ -16,6 +16,7 @@ import {
   Flame,
   Zap,
   Target,
+  ExternalLink,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -35,6 +36,7 @@ interface EconEvent {
   previous: string;
   forecast: string;
   actual: string;
+  sourceUrl?: string;
 }
 
 interface EarningsEvent {
@@ -159,6 +161,38 @@ function fmtShort(dateStr: string): string {
 function fmtWeekday(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
   return DAY_NAMES[d.getDay()];
+}
+
+const SOURCE_URLS: Record<string, string> = {
+  "Home Sale": "https://www.nar.realtor/research-and-statistics",
+  "PMI": "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/",
+  "Consumer Confidence": "https://www.conference-board.org/topics/consumer-confidence",
+  "Durable Goods": "https://www.census.gov/manufacturing/m3/",
+  "Jobless Claims": "https://www.dol.gov/ui/data.pdf",
+  "PCE": "https://www.bea.gov/data/personal-consumption-expenditures-price-index",
+  "Personal Income": "https://www.bea.gov/data/personal-consumption-expenditures-price-index",
+  "Michigan Consumer": "https://data.sca.isr.umich.edu/",
+  "Dallas Fed": "https://www.dallasfed.org/research/surveys/tmos",
+  "CPI": "https://www.bls.gov/cpi/",
+  "PPI": "https://www.bls.gov/ppi/",
+  "FOMC": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+  "JOLTS": "https://www.bls.gov/jlt/",
+  "ADP Employment": "https://adpemploymentreport.com/",
+  "Nonfarm Payrolls": "https://www.bls.gov/news.release/empsit.nr0.htm",
+  "Unemployment Rate": "https://www.bls.gov/news.release/empsit.nr0.htm",
+  "ISM Manufacturing": "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/",
+  "ISM Services": "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/",
+  "NFIB": "https://www.nfib.com/surveys/small-business-economic-trends/",
+  "S&P/CS Home Price": "https://www.spglobal.com/spdji/en/index-family/indicators/sp-corelogic-case-shiller/",
+  "Consumer Credit": "https://www.federalreserve.gov/releases/g19/current/",
+  "Richmond Fed": "https://www.richmondfed.org/research/regional_economy/surveys_of_business_conditions",
+};
+
+function getSourceUrl(name: string): string {
+  for (const [key, url] of Object.entries(SOURCE_URLS)) {
+    if (name.includes(key)) return url;
+  }
+  return "";
 }
 
 /* ------------------------------------------------------------------ */
@@ -480,7 +514,16 @@ export default function CalendarPage() {
                     <span className="font-mono text-xs text-text-tertiary">{ev.time}</span>
                     <div className="flex items-center gap-2">
                       <CategoryIcon category={ev.category} />
-                      <span className="text-sm font-medium">{ev.name}</span>
+                      {getSourceUrl(ev.name) ? (
+                        <a href={getSourceUrl(ev.name)} target="_blank" rel="noopener noreferrer"
+                           className="text-sm font-medium hover:text-cyan-400 transition-colors inline-flex items-center gap-1 group"
+                           onClick={(e) => e.stopPropagation()}>
+                          {ev.name}
+                          <ExternalLink className="w-3 h-3 text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </a>
+                      ) : (
+                        <span className="text-sm font-medium">{ev.name}</span>
+                      )}
                     </div>
                     <div><ImpactBadge impact={ev.impact} /></div>
                     <span className="text-xs text-text-tertiary flex items-center gap-1.5">

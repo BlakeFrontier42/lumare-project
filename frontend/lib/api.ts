@@ -4,7 +4,7 @@
  */
 
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL || "";
 
 export const WS_BASE =
   process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
@@ -161,4 +161,52 @@ export interface StressTestResult {
   portfolio_impact_pct: number | null;
   description: string;
   survives: boolean;
+}
+
+// ─── Orchestrator API ────────────────────────────────────
+
+export async function orchestratorQuery(params: {
+  query: string;
+  user_id?: string;
+  symbol?: string;
+  symbols?: string[];
+  context?: Record<string, unknown>;
+  session_id?: string;
+  category_hint?: string;
+}) {
+  return apiFetch<{
+    request_id: string;
+    routing: { category: string; confidence: number; adapters_used: string[]; slm_handled: boolean };
+    policy: { allowed: boolean; reason: string | null; severity: string };
+    blocks: Array<{ type: string; title: string | null; data: Record<string, unknown>; severity?: string; source?: string }>;
+    latency_ms: number;
+    timestamp: string;
+  }>("/api/orchestrator/query", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getUserProfile(userId = "default") {
+  return apiFetch<{
+    user_id: string;
+    preferences: Record<string, unknown>;
+    signal_stats: { total_signals: number; wins: number; losses: number; win_rate: number };
+    risk_tolerance: string;
+    experience_level: string;
+    favorite_symbols: string[];
+  }>(`/api/orchestrator/memory/profile?user_id=${userId}`);
+}
+
+export async function setUserPreference(key: string, value: unknown, userId = "default") {
+  return apiFetch("/api/orchestrator/memory/preferences", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, key, value }),
+  });
+}
+
+export async function getAuditLog(userId = "default", limit = 50) {
+  return apiFetch<{ decisions: Array<Record<string, unknown>> }>(
+    `/api/orchestrator/audit?user_id=${userId}&limit=${limit}`
+  );
 }

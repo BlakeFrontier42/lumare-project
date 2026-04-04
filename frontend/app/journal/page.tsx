@@ -18,7 +18,11 @@ import {
   Hash,
   ChevronDown,
   ChevronUp,
+  Clock,
+  Award,
+  FileText,
 } from "lucide-react";
+import { ExportMenu } from "@/components/ui/ExportMenu";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Trade {
@@ -162,6 +166,29 @@ export default function JournalPage() {
     }
 
     return { totalPnl, winRate, avgWin, avgLoss, profitFactor, best, worst, total: filtered.length, streak, streakType };
+  }, [filtered]);
+
+  // ── Performance Summary ──────────────────────────────────────────────────
+  const perfSummary = useMemo(() => {
+    const totalEntries = filtered.length;
+    const wins = filtered.filter((t) => t.pnl >= 0);
+    const winRate = totalEntries > 0 ? (wins.length / totalEntries) * 100 : 0;
+    const bestR = totalEntries > 0 ? Math.max(...filtered.map((t) => t.rMultiple)) : 0;
+
+    // Parse duration strings to minutes for averaging
+    function parseDuration(d: string): number {
+      let mins = 0;
+      const hMatch = d.match(/(\d+)\s*h/);
+      const mMatch = d.match(/(\d+)\s*m/);
+      if (hMatch) mins += parseInt(hMatch[1]) * 60;
+      if (mMatch) mins += parseInt(mMatch[1]);
+      return mins || 0;
+    }
+    const durations = filtered.map((t) => parseDuration(t.duration)).filter((d) => d > 0);
+    const avgMins = durations.length > 0 ? durations.reduce((s, d) => s + d, 0) / durations.length : 0;
+    const avgHoldingPeriod = avgMins >= 60 ? `${Math.floor(avgMins / 60)}h ${Math.round(avgMins % 60)}m` : `${Math.round(avgMins)}m`;
+
+    return { totalEntries, winRate, bestR, avgHoldingPeriod };
   }, [filtered]);
 
   // ── Symbol Breakdown ─────────────────────────────────────────────────────
@@ -315,7 +342,25 @@ export default function JournalPage() {
           <h1 className="font-heading text-2xl font-bold text-white">Trade Journal</h1>
           <span className="text-text-tertiary text-sm font-mono ml-2">{filtered.length} trades</span>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center">
+          <ExportMenu
+            data={filtered as unknown as Record<string, unknown>[]}
+            filename="lumare_trade_journal"
+            title="Trade Journal"
+            columns={[
+              { key: "date", label: "Date" },
+              { key: "symbol", label: "Symbol" },
+              { key: "side", label: "Side" },
+              { key: "entry", label: "Entry" },
+              { key: "exit", label: "Exit" },
+              { key: "qty", label: "Qty" },
+              { key: "pnl", label: "P&L ($)" },
+              { key: "pnlPct", label: "P&L (%)" },
+              { key: "rMultiple", label: "R-Multiple" },
+              { key: "duration", label: "Duration" },
+              { key: "notes", label: "Notes" },
+            ]}
+          />
           <button onClick={() => setShowFilters(!showFilters)} className="flex items-center gap-2 px-4 py-2 rounded-button border border-border text-text-secondary hover:text-white hover:border-profit/40 transition-colors text-sm">
             <Filter className="w-4 h-4" /> Filters
           </button>

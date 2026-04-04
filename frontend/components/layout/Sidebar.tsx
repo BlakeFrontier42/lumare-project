@@ -29,6 +29,11 @@ import {
   LayoutGrid,
   Activity,
   Database,
+  Briefcase,
+  GitBranch,
+  Bot,
+  Receipt,
+  Home,
 } from "lucide-react";
 
 interface NavItem {
@@ -57,12 +62,18 @@ const secondaryNav: NavItem[] = [
 ];
 
 const tertiaryNav: NavItem[] = [
+  { label: "Portfolio", href: "/portfolio", icon: Briefcase },
+  { label: "Correlations", href: "/correlations", icon: GitBranch },
+  { label: "Bot", href: "/bot", icon: Bot },
+  { label: "Taxes", href: "/taxes", icon: Receipt },
+  { label: "Real Estate", href: "/realestate", icon: Home },
   { label: "Copy", href: "/copy", icon: Users },
   { label: "Alpha", href: "/alpha", icon: Shield },
   { label: "Marketplace", href: "/marketplace", icon: Store },
   { label: "Journal", href: "/journal", icon: BookOpen },
   { label: "Calendar", href: "/calendar", icon: Calendar },
   { label: "Alerts", href: "/alerts", icon: Bell },
+  { label: "Notifications", href: "/notifications", icon: Bell },
   { label: "Risk", href: "/risk", icon: AlertTriangle },
   { label: "Plan", href: "/plan", icon: Calculator },
 ];

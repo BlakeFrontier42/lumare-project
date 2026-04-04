@@ -8,7 +8,6 @@ import {
   X,
   ChevronDown,
   ChevronUp,
-  Download,
   Zap,
   TrendingUp,
   BarChart3,
@@ -18,6 +17,7 @@ import {
   Filter,
   Layers,
 } from "lucide-react";
+import { ExportMenu } from "@/components/ui/ExportMenu";
 
 /* ------------------------------------------------------------------ */
 /*  TYPES                                                              */
@@ -44,6 +44,8 @@ interface Stock {
   high52w: number;
   low52w: number;
   marketCap: number;
+  floatShares: number;
+  shortFloat: number;
   pe: number | null;
   epsGrowth: number | null;
   divYield: number | null;
@@ -77,6 +79,8 @@ interface Filters {
   minChangeYTD: string;
   minGap: string;
   maxGap: string;
+  minShortFloat: string;
+  maxShortFloat: string;
 }
 
 type SortKey = keyof Stock;
@@ -150,6 +154,8 @@ function makeStock(
     low52w: low52,
     marketCap: mcap,
     pe,
+    floatShares: r(mcap / price * 0.6, mcap / price * 0.95, 0),
+    shortFloat: r(0.5, 25, 1),
     epsGrowth: pe ? r(-20, 80) : null,
     divYield,
     gapPct: r(-5, 8),
@@ -292,6 +298,8 @@ const DEFAULT_FILTERS: Filters = {
   minChangeYTD: "",
   minGap: "",
   maxGap: "",
+  minShortFloat: "",
+  maxShortFloat: "",
 };
 
 /* ------------------------------------------------------------------ */
@@ -593,10 +601,24 @@ export default function ScreenerPage() {
             </span>
           </div>
           {/* Export */}
-          <button className="flex items-center gap-2 bg-bg-card border border-border rounded-chip px-3 py-1.5 hover:bg-bg-elevated transition-colors text-xs text-text-secondary">
-            <Download className="w-3.5 h-3.5" />
-            Export
-          </button>
+          <ExportMenu
+            data={results as unknown as Record<string, unknown>[]}
+            filename="lumare_screener_results"
+            title="Stock Screener Results"
+            columns={[
+              { key: "symbol", label: "Symbol" },
+              { key: "name", label: "Name" },
+              { key: "sector", label: "Sector" },
+              { key: "price", label: "Price" },
+              { key: "change1D", label: "Chg % 1D" },
+              { key: "volume", label: "Volume" },
+              { key: "relVolume", label: "Rel Vol" },
+              { key: "rsi", label: "RSI" },
+              { key: "marketCap", label: "Mkt Cap" },
+              { key: "pe", label: "P/E" },
+              { key: "divYield", label: "Div %" },
+            ]}
+          />
         </div>
       </div>
 
@@ -784,6 +806,8 @@ export default function ScreenerPage() {
                     <SortHeader label="Rel Vol" k="relVolume" />
                     <SortHeader label="RSI" k="rsi" />
                     <SortHeader label="Mkt Cap" k="marketCap" />
+                    <SortHeader label="Float" k="floatShares" />
+                    <SortHeader label="SI %" k="shortFloat" />
                     <SortHeader label="P/E" k="pe" />
                     <SortHeader label="Div %" k="divYield" />
                   </tr>
@@ -791,7 +815,7 @@ export default function ScreenerPage() {
                 <tbody>
                   {results.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="text-center py-16 text-text-tertiary text-sm">
+                      <td colSpan={13} className="text-center py-16 text-text-tertiary text-sm">
                         No stocks match current filters. Try adjusting your criteria.
                       </td>
                     </tr>
@@ -840,6 +864,14 @@ export default function ScreenerPage() {
                         </td>
                         <td className="px-3 py-2.5 font-mono text-text-secondary whitespace-nowrap">
                           {fmtMcap(s.marketCap)}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-text-secondary whitespace-nowrap">
+                          {fmtVol(s.floatShares)}
+                        </td>
+                        <td className={`px-3 py-2.5 font-mono whitespace-nowrap ${
+                          s.shortFloat >= 20 ? "text-loss" : s.shortFloat >= 10 ? "text-yellow-400" : "text-text-secondary"
+                        }`}>
+                          {fmtNum(s.shortFloat, 1)}%
                         </td>
                         <td className="px-3 py-2.5 font-mono text-text-secondary whitespace-nowrap">
                           {fmtNum(s.pe, 1)}

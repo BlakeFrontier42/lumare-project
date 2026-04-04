@@ -2,6 +2,11 @@ import type { Metadata } from "next";
 import { Inter, Space_Grotesk, Space_Mono } from "next/font/google";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { MobileNav } from "@/components/layout/MobileNav";
+import { CommandBar } from "@/components/ui/CommandBar";
+import { NotificationToast } from "@/components/ui/NotificationToast";
+import { Onboarding } from "@/components/ui/Onboarding";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { AuthGuard } from "@/components/auth/AuthGuard";
 import "./globals.css";
 
 const inter = Inter({
@@ -43,16 +48,29 @@ export default function RootLayout({
       className={`${inter.variable} ${spaceGrotesk.variable} ${spaceMono.variable}`}
     >
       <body className="bg-bg-primary text-text-primary font-body antialiased">
-        {/* Desktop layout: sidebar + main */}
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <main className="flex-1 min-w-0 pb-20 lg:pb-0">
-            {children}
-          </main>
-        </div>
+        <AuthGuard>
+          {/* Desktop layout: sidebar + main */}
+          <div className="flex min-h-screen">
+            <Sidebar />
+            <main className="flex-1 min-w-0 pb-20 lg:pb-0">
+              <ErrorBoundary>
+                {children}
+              </ErrorBoundary>
+            </main>
+          </div>
 
-        {/* Mobile bottom nav */}
-        <MobileNav />
+          {/* Mobile bottom nav */}
+          <MobileNav />
+
+          {/* AI Command Bar — Cmd+K */}
+          <CommandBar />
+
+          {/* Real-time trade notifications */}
+          <NotificationToast />
+
+          {/* First-time user onboarding walkthrough */}
+          <Onboarding />
+        </AuthGuard>
       </body>
     </html>
   );

@@ -16,6 +16,7 @@ import {
   ArrowUpRight,
   RefreshCw,
   ChevronRight,
+  ExternalLink,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ interface NewsItem {
   id: string;
   headline: string;
   source: string;
+  url: string;
   timestamp: Date;
   tickers: string[];
   sentiment: Sentiment;
@@ -69,7 +71,17 @@ const CATEGORIES: Category[] = [
 // ---------------------------------------------------------------------------
 // Mock data — 45 realistic financial headlines
 // ---------------------------------------------------------------------------
-const MOCK_HEADLINES: Omit<NewsItem, "id" | "timestamp" | "breaking">[] = [
+const SOURCE_URLS: Record<string, string> = {
+  Reuters: "https://www.reuters.com/markets/",
+  Bloomberg: "https://www.bloomberg.com/markets/",
+  CNBC: "https://www.cnbc.com/markets/",
+  WSJ: "https://www.wsj.com/finance/",
+  CoinDesk: "https://www.coindesk.com/markets/",
+  TechCrunch: "https://techcrunch.com/",
+  MarketWatch: "https://www.marketwatch.com/",
+};
+
+const MOCK_HEADLINES: Omit<NewsItem, "id" | "timestamp" | "breaking" | "url">[] = [
   { headline: "S&P 500 rallies to fresh all-time high on strong jobs data", source: "Reuters", tickers: ["SPY", "SPX"], sentiment: "Bullish", sentimentScore: 0.82, category: "Market News" },
   { headline: "Fed holds rates steady, signals potential cut in September", source: "Bloomberg", tickers: ["TLT", "SPY"], sentiment: "Bullish", sentimentScore: 0.75, category: "Fed/Macro" },
   { headline: "NVIDIA beats Q4 estimates, data center revenue surges 409%", source: "CNBC", tickers: ["NVDA", "SMH"], sentiment: "Bullish", sentimentScore: 0.95, category: "Earnings" },
@@ -143,6 +155,7 @@ function buildInitialFeed(): NewsItem[] {
   return MOCK_HEADLINES.map((item, i) => ({
     ...item,
     id: generateId(),
+    url: SOURCE_URLS[item.source] || `https://www.google.com/search?q=${encodeURIComponent(item.headline)}`,
     timestamp: minutesAgo(i * 3 + Math.floor(Math.random() * 5)),
     breaking: i < 3,
   }));
@@ -286,9 +299,16 @@ function NewsItemRow({
           </span>
         </div>
 
-        <p className="text-sm text-text-primary leading-snug mb-1.5 group-hover:text-white transition-colors">
-          {item.headline}
-        </p>
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-start gap-1.5 text-sm text-text-primary leading-snug mb-1.5 group-hover:text-blue-400 transition-colors cursor-pointer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span>{item.headline}</span>
+          <ExternalLink size={12} className="flex-shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </a>
 
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-text-secondary text-xs">{item.source}</span>
@@ -354,6 +374,7 @@ export default function NewsPage() {
           const newItem: NewsItem = {
             ...base,
             id: generateId(),
+            url: SOURCE_URLS[base.source] || `https://www.google.com/search?q=${encodeURIComponent(base.headline)}`,
             timestamp: new Date(),
             breaking: true,
           };

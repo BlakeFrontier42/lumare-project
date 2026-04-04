@@ -38,6 +38,16 @@ import {
   Database,
   CandlestickChart,
   Layers,
+  Bot,
+  Search,
+  FileBarChart,
+  Radio,
+  ArrowRightLeft,
+  AlertTriangle,
+  CheckCircle,
+  XCircle,
+  DollarSign,
+  Percent,
 } from "lucide-react";
 
 // ─── Pillar Cards ────────────────────────────────────────────
@@ -45,12 +55,16 @@ import {
 const PILLARS = [
   { name: "Intel", description: "CMT-grade technical analysis with ICT, Wyckoff, Elliott Wave", icon: BarChart3, href: "/intel", accent: "#3b82f6" },
   { name: "Macro", description: "Regime detection, FOMC calendar, yield curve analysis", icon: Globe, href: "/macro", accent: "#8b5cf6" },
-  { name: "Trade", description: "Paper and live execution via Alpaca with autonomous signals", icon: Zap, href: "/trade", accent: "#22c55e" },
+  { name: "Trade", description: "Paper and live execution with autonomous signals and SL/TP", icon: Zap, href: "/trade", accent: "#22c55e" },
+  { name: "Bot", description: "Autonomous trading bot — momentum, mean reversion, breakout strategies", icon: Activity, href: "/bot", accent: "#f59e0b" },
+  { name: "Portfolio", description: "Unified wealth management with positions, allocation, performance", icon: Wallet, href: "/portfolio", accent: "#06b6d4" },
+  { name: "Taxes", description: "Capital gains tracking, wash sale detection, tax loss harvesting", icon: Landmark, href: "/taxes", accent: "#ef4444" },
+  { name: "Real Estate", description: "Property portfolio with cap rates, cashflow, appreciation", icon: Target, href: "/realestate", accent: "#f97316" },
+  { name: "Risk", description: "War Room mode with VaR, stress tests, correlation matrix", icon: Shield, href: "/risk", accent: "#10b981" },
+  { name: "Correlations", description: "Cross-sector correlation matrix, sector rotation, event simulator", icon: Database, href: "/correlations", accent: "#8b5cf6" },
+  { name: "Alpha", description: "Congressional disclosures, insider Form 4, institutional 13F", icon: Store, href: "/alpha", accent: "#ef4444" },
   { name: "Copy", description: "Leaderboard and strategy mirroring from top performers", icon: Users, href: "/copy", accent: "#f59e0b" },
-  { name: "Alpha", description: "Congressional disclosures, insider Form 4, institutional 13F", icon: Landmark, href: "/alpha", accent: "#ef4444" },
-  { name: "Marketplace", description: "Strategy signal streams — subscribe to curated alpha", icon: Store, href: "/marketplace", accent: "#06b6d4" },
-  { name: "Risk", description: "War Room mode with VaR, stress tests, correlation matrix", icon: Shield, href: "/risk", accent: "#f97316" },
-  { name: "Plan", description: "Financial planning suite with projection modeling", icon: Target, href: "/plan", accent: "#10b981" },
+  { name: "Plan", description: "Financial planning suite with projection modeling", icon: Target, href: "/plan", accent: "#06b6d4" },
 ];
 
 // ─── Page ────────────────────────────────────────────────────
@@ -223,6 +237,112 @@ export default function DashboardPage() {
             );
           })}
         </div>
+      </section>
+
+      {/* Quick Actions */}
+      <section>
+        <h2 className="font-heading text-lg font-semibold mb-4">Quick Actions</h2>
+        <div className="flex flex-wrap gap-3">
+          {[
+            { label: "New Trade", icon: Zap, href: "/trade", accent: "#22c55e" },
+            { label: "Scan Screener", icon: Search, href: "/screener", accent: "#3b82f6" },
+            { label: "Check Signals", icon: Radio, href: "/intel", accent: "#f59e0b" },
+            { label: "Risk Report", icon: Shield, href: "/risk", accent: "#ef4444" },
+            { label: "Bot Status", icon: Bot, href: "/bot", accent: "#8b5cf6" },
+          ].map((action) => {
+            const Icon = action.icon;
+            return (
+              <a
+                key={action.label}
+                href={action.href}
+                className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg border border-border hover:border-accent-hover bg-bg-card hover:bg-bg-elevated transition-all group"
+              >
+                <div
+                  className="w-8 h-8 rounded-md flex items-center justify-center"
+                  style={{ backgroundColor: `${action.accent}15` }}
+                >
+                  <Icon size={16} style={{ color: action.accent }} />
+                </div>
+                <span className="text-sm font-medium text-text-secondary group-hover:text-text-primary transition-colors">
+                  {action.label}
+                </span>
+              </a>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Account Summary */}
+      <section>
+        <h2 className="font-heading text-lg font-semibold mb-4">Account Summary</h2>
+        <Card>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <DollarSign size={12} className="text-text-tertiary" />
+                <p className="text-text-secondary text-xs uppercase tracking-wider">Account Value</p>
+              </div>
+              <p className="font-heading text-xl font-bold font-mono">$125,000.00</p>
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <Wallet size={12} className="text-text-tertiary" />
+                <p className="text-text-secondary text-xs uppercase tracking-wider">Buying Power</p>
+              </div>
+              <p className="font-heading text-xl font-bold font-mono">$87,500.00</p>
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <Percent size={12} className="text-text-tertiary" />
+                <p className="text-text-secondary text-xs uppercase tracking-wider">Margin Used</p>
+              </div>
+              <p className="font-heading text-xl font-bold font-mono text-yellow-400">30%</p>
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <TrendingUp size={12} className="text-text-tertiary" />
+                <p className="text-text-secondary text-xs uppercase tracking-wider">Daily P/L</p>
+              </div>
+              <p className="font-heading text-xl font-bold font-mono text-profit">+$1,250.00</p>
+            </div>
+          </div>
+        </Card>
+      </section>
+
+      {/* Recent Activity */}
+      <section>
+        <h2 className="font-heading text-lg font-semibold mb-4">Recent Activity</h2>
+        <Card>
+          <div className="space-y-0">
+            {[
+              { icon: CheckCircle, color: "text-profit", label: "Trade Executed", detail: "LONG NVDA 50 shares @ $878.32", time: "2 min ago" },
+              { icon: Radio, color: "text-yellow-400", label: "Signal Fired", detail: "BTCUSDT bullish breakout — composite 78/100", time: "8 min ago" },
+              { icon: XCircle, color: "text-loss", label: "Position Closed", detail: "SHORT TSLA 100 shares — P/L -$312.50", time: "23 min ago" },
+              { icon: AlertTriangle, color: "text-yellow-400", label: "Alert Triggered", detail: "SPY drawdown exceeds -1.5% intraday threshold", time: "41 min ago" },
+              { icon: CheckCircle, color: "text-profit", label: "Trade Executed", detail: "LONG ETH 2.5 units @ $3,521.45", time: "1h ago" },
+              { icon: Bot, color: "text-purple-400", label: "Bot Cycle Complete", detail: "Momentum strategy scanned 142 symbols, 3 setups found", time: "1h 15m ago" },
+              { icon: ArrowRightLeft, color: "text-blue-400", label: "Rebalance Triggered", detail: "Portfolio drift exceeded 5% threshold — rebalance queued", time: "2h ago" },
+              { icon: CheckCircle, color: "text-profit", label: "Take Profit Hit", detail: "LONG AMZN 25 shares — P/L +$487.25 (2.1R)", time: "3h ago" },
+            ].map((event, i) => {
+              const Icon = event.icon;
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center gap-3 px-1 py-3 ${i > 0 ? "border-t border-border/50" : ""}`}
+                >
+                  <Icon size={16} className={event.color} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-text-primary">{event.label}</span>
+                    </div>
+                    <p className="text-xs text-text-secondary truncate">{event.detail}</p>
+                  </div>
+                  <span className="text-[10px] text-text-tertiary font-mono whitespace-nowrap">{event.time}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
       </section>
 
       <footer className="text-center text-text-tertiary text-xs py-8 border-t border-border-subtle">

@@ -83,8 +83,119 @@ class ConnectionManager:
         self._running = False
 
 
-# Singleton
+# Singleton — price streaming
 ws_manager = ConnectionManager()
+
+
+# ═══════════════════════════════════════════════════════════
+# Notification WebSocket Manager
+# ═══════════════════════════════════════════════════════════
+
+class NotificationManager:
+    """
+    Manages WebSocket connections for the /ws/notifications endpoint.
+    Broadcasts structured notification messages (signal_triggered, sl_hit,
+    tp_hit, position_closed, price_alert, system) to all connected clients.
+    """
+
+    VALID_TYPES = {
+        "signal_triggered",
+        "sl_hit",
+        "tp_hit",
+        "position_closed",
+        "price_alert",
+        "system",
+    }
+
+    MAX_HISTORY = 500
+
+    def __init__(self):
+        self.active_connections: Set[WebSocket] = set()
+        self.history: list[dict] = []
+        self._id_counter = 0
+
+    def _next_id(self) -> str:
+        self._id_counter += 1
+        return f"notif-{int(time.time() * 1000)}-{self._id_counter}"
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.add(websocket)
+        logger.info(
+            f"Notification WS client connected ({len(self.active_connections)} total)"
+        )
+        # Send a welcome message so clients know they're connected
+        await self._send(websocket, {
+            "type": "system",
+            "title": "Connected",
+            "message": "Notification stream active",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.discard(websocket)
+        logger.info(
+            f"Notification WS client disconnected ({len(self.active_connections)} total)"
+        )
+
+    async def _send(self, ws: WebSocket, message: dict):
+        try:
+            await ws.send_text(json.dumps(message))
+        except Exception:
+            self.active_connections.discard(ws)
+
+    async def broadcast(self, message: dict):
+        """Send a notification to every connected client."""
+        if not self.active_connections:
+            return
+        payload = json.dumps(message)
+        disconnected = set()
+        for ws in self.active_connections:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                disconnected.add(ws)
+        for ws in disconnected:
+            self.active_connections.discard(ws)
+
+    async def notify(
+        self,
+        notification_type: str,
+        title: str,
+        message: str,
+        data: dict | None = None,
+    ):
+        """
+        Build and broadcast a typed notification.
+
+        notification_type must be one of VALID_TYPES.
+        """
+        if notification_type not in self.VALID_TYPES:
+            logger.warning(f"Unknown notification type: {notification_type}")
+            notification_type = "system"
+
+        payload = {
+            "id": self._next_id(),
+            "type": notification_type,
+            "title": title,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "read": False,
+        }
+        if data:
+            payload["data"] = data
+
+        # Store in history (newest first, capped at MAX_HISTORY)
+        self.history.insert(0, payload)
+        if len(self.history) > self.MAX_HISTORY:
+            self.history = self.history[: self.MAX_HISTORY]
+
+        logger.info(f"Notification [{notification_type}]: {title}")
+        await self.broadcast(payload)
+
+
+# Singleton — notifications
+notification_manager = NotificationManager()
 
 
 # ---------------------------------------------------------------------------

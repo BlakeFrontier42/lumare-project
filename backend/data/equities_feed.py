@@ -1,13 +1,14 @@
 """
-equities_feed.py - Polygon.io connector for US equities data.
+equities_feed.py - Polygon.io + Yahoo Finance connector for US equities data.
 
 Provides OHLCV aggregates, ticker details, market status, and ticker search
-with rate limiting, caching, retries, and mock fallback.
+with rate limiting, caching, retries, and yfinance fallback.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 from datetime import datetime, date, timedelta, timezone
@@ -17,6 +18,13 @@ import httpx
 import numpy as np
 import pandas as pd
 from loguru import logger
+
+try:
+    import yfinance as yf
+    _HAS_YFINANCE = True
+except ImportError:
+    _HAS_YFINANCE = False
+    logger.warning("yfinance not installed -- equity data will use mock fallback")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -32,6 +40,120 @@ TIMEFRAME_MAP = {
     "1hour": (1, "hour"),
     "1day":  (1, "day"),
 }
+
+# Equity symbols that should use yfinance (not crypto)
+EQUITY_SYMBOLS = {
+    "SPY", "QQQ", "AAPL", "TSLA", "NVDA", "AMZN", "TLT", "BND",
+    "GLD", "SLV", "EFA", "VWO", "MSFT", "GOOGL", "META", "AMD",
+    "DIA", "IWM",
+}
+
+# Map internal timeframe codes to yfinance interval strings
+_YF_INTERVAL_MAP = {
+    "1min": "1m",   "1M": "1m",
+    "5min": "5m",   "5M": "5m",
+    "15min": "15m", "15M": "15m",
+    "1hour": "1h",  "1H": "1h",
+    "4hour": "1h",  "4H": "1h",   # yfinance has no 4h; use 1h and resample
+    "1day": "1d",   "1D": "1d",
+}
+
+# yfinance max period for each interval (to avoid "period too large" errors)
+_YF_MAX_PERIOD = {
+    "1m": "7d", "5m": "60d", "15m": "60d",
+    "1h": "730d", "1d": "max",
+}
+
+
+# ---------------------------------------------------------------------------
+# Standalone helper: get_equity_quote()
+# ---------------------------------------------------------------------------
+
+def _yf_fetch_quote_sync(symbol: str) -> dict:
+    """
+    Synchronous yfinance quote fetch. Returns {price, change_pct, volume}.
+    Must be called via asyncio.to_thread() from async code.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.fast_info
+        price = float(info.last_price) if hasattr(info, "last_price") and info.last_price else 0.0
+        prev_close = float(info.previous_close) if hasattr(info, "previous_close") and info.previous_close else 0.0
+        change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0.0
+        volume = int(info.last_volume) if hasattr(info, "last_volume") and info.last_volume else 0
+
+        # Try to get day high/low from history
+        day_high = float(info.day_high) if hasattr(info, "day_high") and info.day_high else 0.0
+        day_low = float(info.day_low) if hasattr(info, "day_low") and info.day_low else 0.0
+
+        return {
+            "price": round(price, 2),
+            "change_pct": round(change_pct, 2),
+            "volume": volume,
+            "high": round(day_high, 2) if day_high else round(price * 1.005, 2),
+            "low": round(day_low, 2) if day_low else round(price * 0.995, 2),
+            "prev_close": round(prev_close, 2),
+        }
+    except Exception as exc:
+        logger.warning("yfinance quote fetch failed for {}: {}", symbol, exc)
+        raise
+
+
+async def get_equity_quote(symbol: str) -> dict:
+    """
+    Async helper to fetch a single equity quote via yfinance.
+
+    Returns
+    -------
+    dict
+        Keys: price, change_pct, volume
+    """
+    if not _HAS_YFINANCE:
+        return {"price": 0.0, "change_pct": 0.0, "volume": 0}
+    return await asyncio.to_thread(_yf_fetch_quote_sync, symbol)
+
+
+def _yf_fetch_ohlcv_sync(
+    symbol: str,
+    interval: str,
+    period: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
+    """
+    Synchronous yfinance OHLCV fetch. Returns DataFrame with standard columns.
+    Must be called via asyncio.to_thread() from async code.
+    """
+    ticker = yf.Ticker(symbol)
+    kwargs: dict[str, Any] = {"interval": interval}
+    if start and end:
+        kwargs["start"] = start
+        kwargs["end"] = end
+    else:
+        kwargs["period"] = period or _YF_MAX_PERIOD.get(interval, "30d")
+
+    df = ticker.history(**kwargs)
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    df = df.reset_index()
+    # yfinance uses "Date" for daily, "Datetime" for intraday
+    ts_col = "Datetime" if "Datetime" in df.columns else "Date"
+    df = df.rename(columns={
+        ts_col: "timestamp",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+    })
+    # Ensure timezone-aware UTC timestamps
+    if df["timestamp"].dt.tz is None:
+        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+    else:
+        df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+
+    return df[["timestamp", "open", "high", "low", "close", "volume"]].sort_values("timestamp").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -84,19 +206,24 @@ class RateLimiter:
 
 
 # ---------------------------------------------------------------------------
-# Polygon Equities Feed
+# Polygon + yfinance Equities Feed
 # ---------------------------------------------------------------------------
 
 class EquitiesFeed:
     """
-    Polygon.io equities data feed.
+    Equities data feed with Polygon.io primary and Yahoo Finance fallback.
+
+    Priority order:
+    1. Polygon.io (if API key configured)
+    2. Yahoo Finance via yfinance (free, no key needed)
+    3. Mock data (last resort)
 
     Parameters
     ----------
     api_key : str | None
         Polygon API key. Falls back to env ``POLYGON_API_KEY``.
     use_mock : bool
-        Return synthetic data instead of hitting the API.
+        Force synthetic data instead of hitting any API.
     cache_ttl : int
         Default cache TTL in seconds.
     max_retries : int
@@ -115,14 +242,18 @@ class EquitiesFeed:
         self.max_retries = max_retries
 
         self._cache = TTLCache(default_ttl=cache_ttl)
+        self._yf_cache = TTLCache(default_ttl=30)  # 30s cache for yfinance quotes
         self._limiter = RateLimiter(max_calls=5, period=1.0)
         self._client: httpx.AsyncClient | None = None
 
         if not self.api_key and not self.use_mock:
-            logger.warning("No Polygon API key configured -- mock data will be used")
+            if _HAS_YFINANCE:
+                logger.info("No Polygon API key -- using Yahoo Finance for equity data")
+            else:
+                logger.warning("No Polygon API key and yfinance not installed -- mock data will be used")
 
     # ------------------------------------------------------------------
-    # HTTP
+    # HTTP (Polygon)
     # ------------------------------------------------------------------
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -179,7 +310,75 @@ class EquitiesFeed:
         raise last_exc  # type: ignore[misc]
 
     # ------------------------------------------------------------------
-    # Mock helpers
+    # yfinance helpers (async wrappers)
+    # ------------------------------------------------------------------
+
+    async def _yfinance_quote(self, symbol: str) -> dict:
+        """Fetch quote via yfinance with 30s caching."""
+        cache_key = f"yf_quote:{symbol}"
+        cached = self._yf_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await asyncio.to_thread(_yf_fetch_quote_sync, symbol)
+            self._yf_cache.set(cache_key, result, ttl=30)
+            return result
+        except Exception as exc:
+            logger.warning("yfinance quote failed for {}: {}", symbol, exc)
+            # Return last cached value if available (even if expired)
+            for key, (_, val) in self._yf_cache._store.items():
+                if key == cache_key:
+                    return val
+            raise
+
+    async def _yfinance_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int = 200,
+    ) -> pd.DataFrame:
+        """Fetch OHLCV via yfinance with caching."""
+        yf_interval = _YF_INTERVAL_MAP.get(timeframe, "1d")
+        cache_key = f"yf_ohlcv:{symbol}:{yf_interval}:{start_date}:{end_date}:{limit}"
+
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Determine period vs start/end
+        kwargs: dict[str, Any] = {}
+        if start_date and end_date:
+            kwargs["start"] = start_date.isoformat()
+            kwargs["end"] = end_date.isoformat()
+        else:
+            # Calculate a sensible period based on interval and limit
+            if yf_interval in ("1m", "5m", "15m"):
+                kwargs["period"] = "5d" if yf_interval == "1m" else "60d"
+            elif yf_interval == "1h":
+                kwargs["period"] = "60d"
+            else:
+                kwargs["period"] = "1y"
+
+        try:
+            df = await asyncio.to_thread(
+                _yf_fetch_ohlcv_sync, symbol, yf_interval,
+                kwargs.get("period"), kwargs.get("start"), kwargs.get("end"),
+            )
+            if not df.empty:
+                df = df.tail(limit).reset_index(drop=True)
+                # Cache: shorter TTL for intraday
+                ttl = 30 if yf_interval in ("1m", "5m", "15m") else 120
+                self._cache.set(cache_key, df, ttl=ttl)
+            return df
+        except Exception as exc:
+            logger.error("yfinance OHLCV failed for {}: {}", symbol, exc)
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    # ------------------------------------------------------------------
+    # Mock helpers (last-resort fallback)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -238,6 +437,30 @@ class EquitiesFeed:
             "weighted_shares_outstanding": int(np.random.uniform(1e8, 5e9)),
         }
 
+    _MOCK_PRICES: dict[str, float] = {
+        "SPY": 568.42, "QQQ": 487.15, "AAPL": 217.35, "TSLA": 172.80,
+        "NVDA": 950.22, "AMZN": 186.74, "MSFT": 425.68, "GOOGL": 158.43,
+        "META": 512.30, "AMD": 164.82, "DIA": 432.50, "IWM": 212.67,
+        "TLT": 87.50, "BND": 72.30, "GLD": 213.80, "SLV": 25.40,
+        "EFA": 79.60, "VWO": 43.20,
+    }
+
+    def _generate_mock_quote(self, symbol: str) -> dict:
+        """Generate a realistic mock quote with small random drift."""
+        base = self._MOCK_PRICES.get(symbol.upper(), 150.00)
+        t = time.time()
+        drift = math.sin(t / 120) * 0.003 + math.sin(t / 37) * 0.001
+        price = round(base * (1 + drift), 2)
+        change_pct = round(drift * 100, 2)
+        return {
+            "price": price,
+            "change_pct": change_pct,
+            "volume": int(np.random.uniform(5e6, 80e6)),
+            "high": round(price * 1.008, 2),
+            "low": round(price * 0.992, 2),
+            "prev_close": round(base, 2),
+        }
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -250,7 +473,9 @@ class EquitiesFeed:
         end_date: str | date | None = None,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV aggregate bars from Polygon.
+        Fetch OHLCV aggregate bars.
+
+        Priority: Polygon -> yfinance -> mock.
 
         Parameters
         ----------
@@ -267,35 +492,47 @@ class EquitiesFeed:
         _end = date.fromisoformat(str(end_date)) if end_date else date.today()
         _start = date.fromisoformat(str(start_date)) if start_date else _end - timedelta(days=30)
 
-        if self.use_mock or not self.api_key:
-            logger.debug("Returning mock OHLCV for {}", symbol)
+        # If forced mock mode, skip everything
+        if self.use_mock:
             return self._generate_mock_ohlcv(symbol, timeframe, _start, _end)
 
-        mult, span = TIMEFRAME_MAP[timeframe]
-        path = f"/v2/aggs/ticker/{symbol.upper()}/range/{mult}/{span}/{_start.isoformat()}/{_end.isoformat()}"
-        cache_key = f"eq_ohlcv:{symbol}:{timeframe}:{_start}:{_end}"
+        # Try Polygon first if key is available
+        if self.api_key:
+            mult, span = TIMEFRAME_MAP[timeframe]
+            path = f"/v2/aggs/ticker/{symbol.upper()}/range/{mult}/{span}/{_start.isoformat()}/{_end.isoformat()}"
+            cache_key = f"eq_ohlcv:{symbol}:{timeframe}:{_start}:{_end}"
 
-        try:
-            data = await self._request(
-                path,
-                params={"adjusted": "true", "sort": "asc", "limit": "50000"},
-                cache_key=cache_key,
-                cache_ttl=300 if span == "day" else 60,
-            )
-            results = data.get("results", [])
-            if not results:
-                logger.warning("Empty Polygon OHLCV for {}; returning mock", symbol)
-                return self._generate_mock_ohlcv(symbol, timeframe, _start, _end)
+            try:
+                data = await self._request(
+                    path,
+                    params={"adjusted": "true", "sort": "asc", "limit": "50000"},
+                    cache_key=cache_key,
+                    cache_ttl=300 if span == "day" else 60,
+                )
+                results = data.get("results", [])
+                if results:
+                    df = pd.DataFrame(results)
+                    df = df.rename(columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                    df = df[["timestamp", "open", "high", "low", "close", "volume"]].sort_values("timestamp").reset_index(drop=True)
+                    return df
+                logger.warning("Empty Polygon OHLCV for {}; trying yfinance", symbol)
+            except Exception as exc:
+                logger.warning("Polygon OHLCV failed for {}: {} -- trying yfinance", symbol, exc)
 
-            df = pd.DataFrame(results)
-            df = df.rename(columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-            df = df[["timestamp", "open", "high", "low", "close", "volume"]].sort_values("timestamp").reset_index(drop=True)
-            return df
+        # Try yfinance
+        if _HAS_YFINANCE:
+            try:
+                df = await self._yfinance_ohlcv(symbol, timeframe, _start, _end)
+                if not df.empty:
+                    logger.debug("yfinance OHLCV returned {} bars for {}", len(df), symbol)
+                    return df
+            except Exception as exc:
+                logger.warning("yfinance OHLCV also failed for {}: {}", symbol, exc)
 
-        except Exception as exc:
-            logger.error("Polygon OHLCV failed for {}: {} -- returning mock", symbol, exc)
-            return self._generate_mock_ohlcv(symbol, timeframe, _start, _end)
+        # Last resort: mock
+        logger.debug("Returning mock OHLCV for {}", symbol)
+        return self._generate_mock_ohlcv(symbol, timeframe, _start, _end)
 
     async def get_ticker_details(self, symbol: str) -> dict:
         """Get detailed information about a ticker."""
@@ -351,72 +588,59 @@ class EquitiesFeed:
             return []
 
     # ------------------------------------------------------------------
-    # Quote (for WebSocket streaming)
+    # Quote (for prices endpoint + WebSocket streaming)
     # ------------------------------------------------------------------
-
-    # Realistic base prices for mock quotes
-    _MOCK_PRICES: dict[str, float] = {
-        "SPY": 568.42, "QQQ": 487.15, "AAPL": 217.35, "TSLA": 172.80,
-        "NVDA": 950.22, "AMZN": 186.74, "MSFT": 425.68, "GOOGL": 158.43,
-        "META": 512.30, "AMD": 164.82, "DIA": 432.50, "IWM": 212.67,
-    }
 
     async def get_quote(self, symbol: str) -> dict | None:
         """
         Get a real-time quote for a single equity ticker.
 
+        Priority: Polygon -> yfinance -> mock.
+
         Returns dict with: price, change_pct, volume, high, low, prev_close.
-        Uses Polygon snapshot endpoint when key available, mock otherwise.
         """
-        if self.use_mock or not self.api_key:
+        # If forced mock mode, skip APIs
+        if self.use_mock:
             return self._generate_mock_quote(symbol)
 
-        cache_key = f"eq_quote:{symbol}"
-        try:
-            data = await self._request(
-                f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol.upper()}",
-                cache_key=cache_key,
-                cache_ttl=15,
-            )
-            ticker = data.get("ticker", {})
-            day = ticker.get("day", {})
-            prev = ticker.get("prevDay", {})
-            last = ticker.get("lastTrade", {})
+        # Try Polygon first if key is available
+        if self.api_key:
+            cache_key = f"eq_quote:{symbol}"
+            try:
+                data = await self._request(
+                    f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol.upper()}",
+                    cache_key=cache_key,
+                    cache_ttl=15,
+                )
+                ticker = data.get("ticker", {})
+                day = ticker.get("day", {})
+                prev = ticker.get("prevDay", {})
+                last = ticker.get("lastTrade", {})
 
-            price = float(last.get("p", day.get("c", 0)))
-            prev_close = float(prev.get("c", price))
-            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
+                price = float(last.get("p", day.get("c", 0)))
+                prev_close = float(prev.get("c", price))
+                change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
 
-            return {
-                "price": round(price, 2),
-                "change_pct": round(change_pct, 2),
-                "volume": int(day.get("v", 0)),
-                "high": float(day.get("h", 0)),
-                "low": float(day.get("l", 0)),
-                "prev_close": round(prev_close, 2),
-            }
-        except Exception as exc:
-            logger.debug("Quote failed for {}: {} -- returning mock", symbol, exc)
-            return self._generate_mock_quote(symbol)
+                return {
+                    "price": round(price, 2),
+                    "change_pct": round(change_pct, 2),
+                    "volume": int(day.get("v", 0)),
+                    "high": float(day.get("h", 0)),
+                    "low": float(day.get("l", 0)),
+                    "prev_close": round(prev_close, 2),
+                }
+            except Exception as exc:
+                logger.debug("Polygon quote failed for {}: {} -- trying yfinance", symbol, exc)
 
-    def _generate_mock_quote(self, symbol: str) -> dict:
-        """Generate a realistic mock quote with small random drift."""
-        base = self._MOCK_PRICES.get(symbol.upper(), 150.00)
-        # Deterministic but slowly drifting price based on time
-        import math
-        t = time.time()
-        # Small sinusoidal drift + noise so it looks alive
-        drift = math.sin(t / 120) * 0.003 + math.sin(t / 37) * 0.001
-        price = round(base * (1 + drift), 2)
-        change_pct = round(drift * 100, 2)
-        return {
-            "price": price,
-            "change_pct": change_pct,
-            "volume": int(np.random.uniform(5e6, 80e6)),
-            "high": round(price * 1.008, 2),
-            "low": round(price * 0.992, 2),
-            "prev_close": round(base, 2),
-        }
+        # Try yfinance
+        if _HAS_YFINANCE:
+            try:
+                return await self._yfinance_quote(symbol)
+            except Exception as exc:
+                logger.debug("yfinance quote also failed for {}: {} -- returning mock", symbol, exc)
+
+        # Last resort: mock
+        return self._generate_mock_quote(symbol)
 
     # ------------------------------------------------------------------
     # Lifecycle

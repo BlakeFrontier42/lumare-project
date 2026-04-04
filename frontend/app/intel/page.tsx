@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { Card } from "@/components/ui/Card";
-import { TradingChart } from "@/components/charts/TradingChart";
+import { TradingViewChart } from "@/components/charts/TradingViewChart";
 import { apiFetch, type SignalScore } from "@/lib/api";
 import {
   BarChart3,
@@ -160,7 +160,7 @@ export default function IntelPage() {
 
       {/* Chart */}
       <Card className="overflow-hidden p-0">
-        <TradingChart symbol={symbol} initialTimeframe={timeframe} height={500} showTimeframes showVolume />
+        <TradingViewChart symbol={symbol} height={500} interval={timeframe === "5M" ? "5" : timeframe === "15M" ? "15" : timeframe === "1H" ? "60" : timeframe === "4H" ? "240" : "D"} />
       </Card>
 
       {/* Signal Score Breakdown */}

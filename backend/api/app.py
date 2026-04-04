@@ -6,14 +6,19 @@ scoring signals, portfolio state, backtest results, and alpha feeds.
 """
 
 import asyncio
+import math
+import random
+import time
 import traceback
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -51,28 +56,35 @@ from backend.api.schemas import (
     TradeRecord,
     TradesResponse,
 )
-from backend.api.websocket import ws_manager
+from backend.api.websocket import ws_manager, notification_manager
 
 # ─── Engine Singleton ────────────────────────────────────
 
 _engine = None
+_orchestrator = None
 _last_backtest_result = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the LumareEngine on startup and start WebSocket streaming."""
-    global _engine
+    """Initialize the LumareEngine and Orchestrator on startup."""
+    global _engine, _orchestrator
     try:
         from backend.main import LumareEngine
+        from backend.orchestrator.router import Orchestrator
         _engine = LumareEngine()
-        logger.info("Lumare API started — engine initialized")
+        _orchestrator = Orchestrator(engine=_engine, settings=_engine.settings)
+        logger.info("Lumare API started — engine + orchestrator initialized")
 
         # Start WebSocket price streaming in the background
         asyncio.create_task(ws_manager.start_price_stream(_engine))
+
+        # Start SL/TP monitoring background task
+        asyncio.create_task(_monitor_sl_tp_task(_engine))
     except Exception as exc:
         logger.error(f"Failed to initialize LumareEngine: {exc}")
         _engine = None
+        _orchestrator = None
     yield
     ws_manager.stop()
     logger.info("Lumare API shutting down")
@@ -89,10 +101,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,32 +151,90 @@ async def health_check():
 
 @app.get("/api/markets/prices", response_model=PricesResponse, tags=["Markets"])
 async def get_prices(engine=Depends(get_engine)):
-    """Get latest prices for all watched symbols."""
-    symbols = (
-        engine.settings.instruments.crypto_pairs
-        + engine.settings.instruments.equity_symbols
-    )
+    """Get latest prices for all watched symbols via Kraken (crypto) + equities feed."""
+
+    crypto_symbols = engine.settings.instruments.crypto_pairs
+    equity_symbols = engine.settings.instruments.equity_symbols
     prices = []
 
-    for symbol in symbols:
+    # ── Crypto: batch fetch from Kraken ──
+    _KRAKEN_MAP = {
+        "BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
+        "XRPUSDT": "XRPUSD", "ADAUSDT": "ADAUSD", "AVAXUSDT": "AVAXUSD",
+        "DOGEUSDT": "XDGUSD", "LINKUSDT": "LINKUSD", "DOTUSDT": "DOTUSD",
+        "MATICUSDT": "MATICUSD",
+    }
+    # Kraken returns inconsistent keys — build a reverse map of all possible forms
+    _KRAKEN_ALIASES = {
+        "XBTUSD": ["XXBTZUSD", "XBTUSD"],
+        "ETHUSD": ["XETHZUSD", "ETHUSD"],
+        "SOLUSD": ["SOLUSD"],
+        "XRPUSD": ["XXRPZUSD", "XRPUSD"],
+        "ADAUSD": ["ADAUSD"],
+        "AVAXUSD": ["AVAXUSD"],
+        "XDGUSD": ["XXDGZUSD", "XDGUSD"],
+        "LINKUSD": ["LINKUSD"],
+        "DOTUSD": ["DOTUSD"],
+        "MATICUSD": ["MATICUSD"],
+    }
+    kraken_pairs = [_KRAKEN_MAP.get(s, s) for s in crypto_symbols if s in _KRAKEN_MAP]
+    kraken_data = {}
+    if kraken_pairs:
         try:
-            ticker = await engine.crypto_feed.get_ticker(symbol)
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.get(
+                    f"https://api.kraken.com/0/public/Ticker?pair={','.join(kraken_pairs)}"
+                )
+                if resp.status_code == 200:
+                    kraken_data = resp.json().get("result", {})
+        except Exception as exc:
+            logger.warning(f"Kraken batch fetch failed: {exc}")
+
+    def _find_kraken(pair: str) -> dict | None:
+        # Direct lookup
+        if pair in kraken_data:
+            return kraken_data[pair]
+        # Alias lookup
+        for alias in _KRAKEN_ALIASES.get(pair, []):
+            if alias in kraken_data:
+                return kraken_data[alias]
+        return None
+
+    for sym in crypto_symbols:
+        kp = _KRAKEN_MAP.get(sym)
+        kd = _find_kraken(kp) if kp else None
+        if kd:
+            last = float(kd["c"][0])
+            open_24h = float(kd["o"])
+            change_pct = ((last - open_24h) / open_24h * 100) if open_24h else 0
             prices.append(PriceData(
-                symbol=symbol,
-                price=float(ticker.get("last", 0)),
-                change_24h=float(ticker.get("percentage", 0)) if ticker.get("percentage") else None,
-                volume_24h=float(ticker.get("quoteVolume", 0)) if ticker.get("quoteVolume") else None,
-                high_24h=float(ticker.get("high", 0)) if ticker.get("high") else None,
-                low_24h=float(ticker.get("low", 0)) if ticker.get("low") else None,
+                symbol=sym,
+                price=last,
+                change_24h=round(change_pct, 2),
+                volume_24h=float(kd["v"][1]),
+                high_24h=float(kd["h"][1]),
+                low_24h=float(kd["l"][1]),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            ))
+        else:
+            prices.append(PriceData(symbol=sym, price=0.0, timestamp=datetime.now(timezone.utc).isoformat()))
+
+    # ── Equities: use equities feed ──
+    for sym in equity_symbols:
+        try:
+            quote = await engine.equities_feed.get_quote(sym)
+            prices.append(PriceData(
+                symbol=sym,
+                price=float(quote.get("price", 0) or quote.get("last_price", 0)),
+                change_24h=float(quote.get("change_pct", 0) or quote.get("change_24h_pct", 0)),
+                volume_24h=float(quote.get("volume", 0) or quote.get("volume_24h", 0)) or None,
+                high_24h=float(quote.get("high", 0) or quote.get("high_24h", 0)) or None,
+                low_24h=float(quote.get("low", 0) or quote.get("low_24h", 0)) or None,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             ))
         except Exception as exc:
-            logger.warning(f"Failed to fetch price for {symbol}: {exc}")
-            prices.append(PriceData(
-                symbol=symbol,
-                price=0.0,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
+            logger.warning(f"Failed to fetch equity price for {sym}: {exc}")
+            prices.append(PriceData(symbol=sym, price=0.0, timestamp=datetime.now(timezone.utc).isoformat()))
 
     return PricesResponse(
         prices=prices,
@@ -184,46 +251,107 @@ async def get_candles(
     limit: int = Query(default=200, ge=1, le=2000, description="Max candles to return"),
     engine=Depends(get_engine),
 ):
-    """Get OHLCV candle data for a symbol."""
-    now = datetime.now(timezone.utc)
-    if not end:
-        end = now.isoformat()
-    if not start:
-        # Default: last 200 bars based on timeframe
-        tf_minutes = engine.settings.timeframes.timeframe_minutes.get(timeframe, 60)
-        start = (now - timedelta(minutes=tf_minutes * limit)).isoformat()
+    """Get OHLCV candle data — Kraken for crypto, yfinance/Polygon for equities."""
+    _TF_MINUTES = {"1M": 1, "5M": 5, "15M": 15, "1H": 60, "4H": 240, "1D": 1440}
+    _KRK = {
+        "BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
+        "XRPUSDT": "XRPUSD", "ADAUSDT": "ADAUSD", "AVAXUSDT": "AVAXUSD",
+        "DOGEUSDT": "XDGUSD", "LINKUSDT": "LINKUSD",
+    }
 
-    try:
-        df = engine.storage.get_candles(symbol, timeframe, start, end)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to retrieve candles: {exc}")
+    interval = _TF_MINUTES.get(timeframe, 60)
+    candles = []
 
-    if df is None or df.empty:
-        return CandlesResponse(symbol=symbol, timeframe=timeframe, candles=[], count=0)
+    # Try Kraken for crypto symbols
+    if symbol in _KRK:
+        try:
+            since = int((datetime.now(timezone.utc) - timedelta(minutes=interval * limit)).timestamp())
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"https://api.kraken.com/0/public/OHLC?pair={_KRK[symbol]}&interval={interval}&since={since}"
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    result = data.get("result", {})
+                    # Kraken returns data under a key that varies — grab the first array
+                    ohlc_data = None
+                    for k, v in result.items():
+                        if isinstance(v, list) and len(v) > 0:
+                            ohlc_data = v
+                            break
+                    if ohlc_data:
+                        for row in ohlc_data[-limit:]:
+                            # [timestamp, open, high, low, close, vwap, volume, count]
+                            candles.append(CandleData(
+                                timestamp=datetime.fromtimestamp(int(row[0]), tz=timezone.utc).isoformat(),
+                                open=float(row[1]),
+                                high=float(row[2]),
+                                low=float(row[3]),
+                                close=float(row[4]),
+                                volume=float(row[6]),
+                                vwap=float(row[5]) if row[5] else None,
+                                trade_count=int(row[7]) if len(row) > 7 else None,
+                            ))
+        except Exception as exc:
+            logger.warning(f"Kraken OHLC failed for {symbol}: {exc}")
 
-    # Limit rows
-    df = df.tail(limit)
+    # Fallback for equities: use yfinance via equities_feed, then mock as last resort
+    if not candles:
+        # Map API timeframe to equities_feed timeframe
+        _API_TO_FEED_TF = {
+            "1M": "1min", "5M": "5min", "15M": "15min",
+            "1H": "1hour", "4H": "1hour", "1D": "1day",
+        }
+        feed_tf = _API_TO_FEED_TF.get(timeframe, "1day")
 
-    candles = [
-        CandleData(
-            timestamp=str(row.get("timestamp", row.name if hasattr(row, "name") else "")),
-            open=float(row["open"]),
-            high=float(row["high"]),
-            low=float(row["low"]),
-            close=float(row["close"]),
-            volume=float(row["volume"]),
-            trade_count=int(row["trade_count"]) if pd.notna(row.get("trade_count")) else None,
-            vwap=float(row["vwap"]) if pd.notna(row.get("vwap")) else None,
-        )
-        for _, row in df.iterrows()
-    ]
+        try:
+            df = await engine.equities_feed.get_ohlcv(
+                symbol=symbol,
+                timeframe=feed_tf,
+                start_date=start if start else None,
+                end_date=end if end else None,
+            )
+            if not df.empty:
+                for _, row in df.tail(limit).iterrows():
+                    ts = row["timestamp"]
+                    ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    candles.append(CandleData(
+                        timestamp=ts_str,
+                        open=round(float(row["open"]), 6),
+                        high=round(float(row["high"]), 6),
+                        low=round(float(row["low"]), 6),
+                        close=round(float(row["close"]), 6),
+                        volume=round(float(row["volume"])),
+                    ))
+        except Exception as exc:
+            logger.warning(f"Equities feed OHLCV failed for {symbol}: {exc}")
 
-    return CandlesResponse(
-        symbol=symbol,
-        timeframe=timeframe,
-        candles=candles,
-        count=len(candles),
-    )
+    # Last-resort mock if still no candles (e.g. unknown symbol, all APIs failed)
+    if not candles:
+        import math, random
+        _BASES = {"SPY": 568, "QQQ": 487, "AAPL": 217, "TSLA": 172, "NVDA": 950,
+                  "AMZN": 187, "MSFT": 390, "GOOGL": 160, "META": 590, "AMD": 105,
+                  "BTCUSDT": 67500, "ETHUSDT": 2060, "SOLUSDT": 84, "XRPUSDT": 1.34}
+        base = _BASES.get(symbol, 100)
+        now_ts = datetime.now(timezone.utc)
+        price = base * (0.97 + random.random() * 0.06)
+        vol = base * 0.008
+        for i in range(limit, 0, -1):
+            ts = now_ts - timedelta(minutes=interval * i)
+            drift = math.sin(i / 40) * vol * 0.5
+            o = price + drift
+            move = (random.random() - 0.48) * vol * 2
+            c = o + move
+            h = max(o, c) + random.random() * vol * 0.7
+            l = min(o, c) - random.random() * vol * 0.7
+            candles.append(CandleData(
+                timestamp=ts.isoformat(),
+                open=round(o, 6), high=round(h, 6), low=round(l, 6),
+                close=round(c, 6), volume=round(base * (500 + random.random() * 2000)),
+            ))
+            price = c
+
+    return CandlesResponse(symbol=symbol, timeframe=timeframe, candles=candles, count=len(candles))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -590,6 +718,37 @@ async def websocket_prices(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
+@app.websocket("/ws/notifications")
+async def websocket_notifications(websocket: WebSocket):
+    """WebSocket endpoint for real-time trade/system notifications."""
+    await notification_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive; clients can send ping/ack
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        notification_manager.disconnect(websocket)
+
+
+# ═══════════════════════════════════════════════════════════
+# Notification History
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/api/notifications/history", tags=["Notifications"])
+async def get_notification_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    type: Optional[str] = Query(None),
+):
+    """Return stored notification history with optional type filter."""
+    items = notification_manager.history
+    if type:
+        items = [n for n in items if n.get("type") == type]
+    total = len(items)
+    page = items[offset : offset + limit]
+    return {"notifications": page, "total": total, "limit": limit, "offset": offset}
+
+
 # ═══════════════════════════════════════════════════════════
 # Macro Intelligence
 # ═══════════════════════════════════════════════════════════
@@ -817,6 +976,49 @@ def _compute_stress_tests(engine, equity: float) -> list:
 
 
 # ═══════════════════════════════════════════════════════════
+# Advanced Risk Analytics (VaR, Stress, Correlation, Metrics)
+# ═══════════════════════════════════════════════════════════
+
+_risk_engine = None
+
+
+def _get_risk_engine():
+    global _risk_engine
+    if _risk_engine is None:
+        from backend.orchestrator.risk_analytics import RiskAnalyticsEngine
+        _risk_engine = RiskAnalyticsEngine()
+    return _risk_engine
+
+
+@app.get("/api/risk/var", tags=["Risk Analytics"])
+async def risk_var(confidence: float = 0.95):
+    """Value at Risk — Historical, Parametric, Monte Carlo."""
+    engine = _get_risk_engine()
+    return engine.get_var(confidence)
+
+
+@app.get("/api/risk/stress", tags=["Risk Analytics"])
+async def risk_stress():
+    """Stress test scenarios with portfolio impact."""
+    engine = _get_risk_engine()
+    return {"scenarios": engine.get_stress_tests()}
+
+
+@app.get("/api/risk/correlation", tags=["Risk Analytics"])
+async def risk_correlation():
+    """Pairwise correlation matrix for portfolio holdings."""
+    engine = _get_risk_engine()
+    return engine.get_correlation()
+
+
+@app.get("/api/risk/metrics", tags=["Risk Analytics"])
+async def risk_metrics():
+    """Full risk metrics: Beta, Sortino, Max DD, Calmar, CVaR."""
+    engine = _get_risk_engine()
+    return engine.get_metrics()
+
+
+# ═══════════════════════════════════════════════════════════
 # Live Signal Scoring (compute on demand)
 # ═══════════════════════════════════════════════════════════
 
@@ -969,3 +1171,898 @@ def _extract_backtest_summary(result, req: BacktestRequest) -> BacktestResultSum
         calmar_ratio=_safe_float(metrics.get("calmar_ratio") or metrics.get("calmar")),
         status="completed",
     )
+
+
+# ═══════════════════════════════════════════════════════════
+# Orchestrator API Endpoints
+# ═══════════════════════════════════════════════════════════
+
+def get_orchestrator():
+    """Dependency that provides the Orchestrator instance."""
+    if _orchestrator is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Orchestrator not initialized.",
+        )
+    return _orchestrator
+
+
+@app.post("/api/orchestrator/query")
+async def orchestrator_query(
+    body: dict,
+    orchestrator=Depends(get_orchestrator),
+):
+    """
+    Main orchestrator endpoint. Accepts a query and returns
+    a unified structured response with routing, policy, and content blocks.
+    """
+    from backend.orchestrator.schemas import OrchestratorRequest
+
+    request = OrchestratorRequest(
+        query=body.get("query", ""),
+        user_id=body.get("user_id", "default"),
+        symbol=body.get("symbol"),
+        symbols=body.get("symbols", []),
+        context=body.get("context", {}),
+        session_id=body.get("session_id"),
+        category_hint=body.get("category_hint"),
+    )
+
+    response = await orchestrator.process(request)
+    return response.model_dump()
+
+
+@app.get("/api/orchestrator/audit")
+async def orchestrator_audit(
+    user_id: str = "default",
+    limit: int = 50,
+    orchestrator=Depends(get_orchestrator),
+):
+    """Get the decision audit log for a user."""
+    return {"decisions": orchestrator.get_audit_log(user_id, limit)}
+
+
+@app.get("/api/orchestrator/memory/preferences")
+async def orchestrator_preferences(
+    user_id: str = "default",
+    orchestrator=Depends(get_orchestrator),
+):
+    """Get all user preferences."""
+    return orchestrator.memory.get_all_preferences(user_id)
+
+
+@app.post("/api/orchestrator/memory/preferences")
+async def set_orchestrator_preference(
+    body: dict,
+    orchestrator=Depends(get_orchestrator),
+):
+    """Set a user preference."""
+    orchestrator.set_user_preference(
+        user_id=body.get("user_id", "default"),
+        key=body.get("key", ""),
+        value=body.get("value"),
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/orchestrator/memory/signals")
+async def orchestrator_signal_history(
+    user_id: str = "default",
+    symbol: Optional[str] = None,
+    limit: int = 50,
+    orchestrator=Depends(get_orchestrator),
+):
+    """Get signal outcome history."""
+    return {
+        "signals": orchestrator.memory.get_signal_history(user_id, limit, symbol),
+        "stats": orchestrator.memory.get_signal_stats(user_id),
+    }
+
+
+@app.get("/api/orchestrator/memory/profile")
+async def orchestrator_user_profile(
+    user_id: str = "default",
+    orchestrator=Depends(get_orchestrator),
+):
+    """Get assembled user profile (preferences + signal stats)."""
+    return orchestrator.memory.get_user_profile(user_id)
+
+
+# ═══════════════════════════════════════════════════════════
+# Paper Trading
+# ═══════════════════════════════════════════════════════════
+
+# In-memory paper trading state — resets on server restart
+_paper_positions: dict = {}       # id -> position dict
+_paper_closed_trades: list = []   # closed positions with P&L
+_paper_next_id: int = 1
+
+
+# ─── SL / TP Background Monitor ─────────────────────────
+
+async def _monitor_sl_tp_task(engine):
+    """
+    Background task: every 5 seconds, check open paper positions against
+    current prices.  If a stop-loss or take-profit is hit, auto-close the
+    position and broadcast a notification.
+    """
+    from backend.api.websocket import _fetch_all_prices
+
+    logger.info("SL/TP monitor started")
+
+    while True:
+        try:
+            await asyncio.sleep(5)
+
+            open_ids = [
+                pid for pid, p in _paper_positions.items() if p["status"] == "open"
+            ]
+            if not open_ids:
+                continue
+
+            # Fetch latest prices into a symbol -> price map
+            prices_list = await _fetch_all_prices(engine)
+            price_map: dict[str, float] = {}
+            for p in prices_list:
+                price_map[p["symbol"]] = p["price"]
+
+            for pid in open_ids:
+                pos = _paper_positions.get(pid)
+                if pos is None or pos["status"] != "open":
+                    continue
+
+                current_price = price_map.get(pos["symbol"])
+                if current_price is None:
+                    continue
+
+                sl = pos.get("stop_loss")
+                tp = pos.get("take_profit")
+                triggered = None
+                trigger_type = None
+
+                if pos["side"] == "long":
+                    if sl is not None and current_price <= sl:
+                        triggered = sl
+                        trigger_type = "sl_hit"
+                    elif tp is not None and current_price >= tp:
+                        triggered = tp
+                        trigger_type = "tp_hit"
+                else:  # short
+                    if sl is not None and current_price >= sl:
+                        triggered = sl
+                        trigger_type = "sl_hit"
+                    elif tp is not None and current_price <= tp:
+                        triggered = tp
+                        trigger_type = "tp_hit"
+
+                if triggered is None:
+                    continue
+
+                # Auto-close the position at the trigger price
+                exit_price = float(triggered)
+                if pos["side"] == "long":
+                    pnl = (exit_price - pos["entry_price"]) * pos["quantity"]
+                else:
+                    pnl = (pos["entry_price"] - exit_price) * pos["quantity"]
+
+                pnl_pct = (pnl / (pos["entry_price"] * pos["quantity"])) * 100
+
+                r_multiple = None
+                if pos["stop_loss"] is not None:
+                    risk_per_unit = abs(pos["entry_price"] - pos["stop_loss"])
+                    if risk_per_unit > 0:
+                        r_multiple = round(pnl / (risk_per_unit * pos["quantity"]), 2)
+
+                pos["status"] = "closed"
+                pos["exit_price"] = exit_price
+                pos["close_time"] = _now_iso()
+                pos["pnl"] = round(pnl, 2)
+                pos["pnl_pct"] = round(pnl_pct, 2)
+                pos["r_multiple"] = r_multiple
+                pos["close_reason"] = trigger_type
+
+                _paper_closed_trades.append(pos)
+                del _paper_positions[pid]
+
+                label = "Stop-Loss Hit" if trigger_type == "sl_hit" else "Take-Profit Hit"
+                pnl_word = "Profit" if pnl >= 0 else "Loss"
+
+                logger.info(
+                    f"[{label}] {pos['symbol']}: closed @ ${exit_price:,.2f} | "
+                    f"P&L ${pnl:+,.2f} ({pnl_pct:+.1f}%)"
+                )
+
+                await notification_manager.notify(
+                    trigger_type,
+                    f"{label} — {pos['symbol']}",
+                    f"Closed @ ${exit_price:,.2f} | {pnl_word}: ${pnl:+,.2f} ({pnl_pct:+.1f}%)",
+                    data=pos,
+                )
+
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning(f"SL/TP monitor error: {exc}")
+            await asyncio.sleep(5)
+
+    logger.info("SL/TP monitor stopped")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@app.post("/api/paper/order", tags=["Paper Trading"])
+async def paper_submit_order(body: dict):
+    """
+    Submit a paper trade order.
+
+    Body: { symbol, side: "long"|"short", quantity, entry_price,
+            stop_loss?, take_profit? }
+    """
+    global _paper_next_id
+
+    symbol = body.get("symbol")
+    side = body.get("side")
+    quantity = body.get("quantity")
+    entry_price = body.get("entry_price")
+
+    if not symbol or not side or quantity is None or entry_price is None:
+        raise HTTPException(status_code=400, detail="Missing required fields: symbol, side, quantity, entry_price")
+
+    if side not in ("long", "short"):
+        raise HTTPException(status_code=400, detail="side must be 'long' or 'short'")
+
+    if quantity <= 0 or entry_price <= 0:
+        raise HTTPException(status_code=400, detail="quantity and entry_price must be positive")
+
+    pos_id = str(_paper_next_id)
+    _paper_next_id += 1
+
+    position = {
+        "id": pos_id,
+        "symbol": symbol.upper(),
+        "side": side,
+        "entry_price": float(entry_price),
+        "quantity": float(quantity),
+        "stop_loss": float(body["stop_loss"]) if body.get("stop_loss") is not None else None,
+        "take_profit": float(body["take_profit"]) if body.get("take_profit") is not None else None,
+        "open_time": _now_iso(),
+        "status": "open",
+    }
+
+    _paper_positions[pos_id] = position
+    logger.info(f"Paper order: {side.upper()} {quantity} {symbol} @ {entry_price}")
+
+    # Broadcast notification
+    sl_str = f" | SL: {position['stop_loss']}" if position["stop_loss"] else ""
+    tp_str = f" | TP: {position['take_profit']}" if position["take_profit"] else ""
+    await notification_manager.notify(
+        "signal_triggered",
+        f"Order Placed — {symbol.upper()}",
+        f"{side.upper()} {quantity} @ ${entry_price:,.2f}{sl_str}{tp_str}",
+        data=position,
+    )
+
+    return {"status": "ok", "position": position}
+
+
+@app.get("/api/paper/positions", tags=["Paper Trading"])
+async def paper_get_positions():
+    """Get all open paper positions."""
+    open_positions = [p for p in _paper_positions.values() if p["status"] == "open"]
+    return {"positions": open_positions}
+
+
+@app.post("/api/paper/close/{position_id}", tags=["Paper Trading"])
+async def paper_close_position(position_id: str, body: dict):
+    """
+    Close a paper position at the given exit price.
+
+    Body: { exit_price }
+    """
+    if position_id not in _paper_positions:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    pos = _paper_positions[position_id]
+    if pos["status"] != "open":
+        raise HTTPException(status_code=400, detail="Position is already closed")
+
+    exit_price = body.get("exit_price")
+    if exit_price is None or exit_price <= 0:
+        raise HTTPException(status_code=400, detail="exit_price is required and must be positive")
+
+    exit_price = float(exit_price)
+
+    # Calculate P&L
+    if pos["side"] == "long":
+        pnl = (exit_price - pos["entry_price"]) * pos["quantity"]
+    else:
+        pnl = (pos["entry_price"] - exit_price) * pos["quantity"]
+
+    pnl_pct = (pnl / (pos["entry_price"] * pos["quantity"])) * 100
+
+    # Calculate R-multiple if stop_loss was set
+    r_multiple = None
+    if pos["stop_loss"] is not None:
+        risk_per_unit = abs(pos["entry_price"] - pos["stop_loss"])
+        if risk_per_unit > 0:
+            r_multiple = round(pnl / (risk_per_unit * pos["quantity"]), 2)
+
+    # Mark position closed
+    pos["status"] = "closed"
+    pos["exit_price"] = exit_price
+    pos["close_time"] = _now_iso()
+    pos["pnl"] = round(pnl, 2)
+    pos["pnl_pct"] = round(pnl_pct, 2)
+    pos["r_multiple"] = r_multiple
+
+    _paper_closed_trades.append(pos)
+    del _paper_positions[position_id]
+
+    # Auto-record closed trade as a tax lot
+    try:
+        from backend.orchestrator.taxes import get_tax_engine
+        tax_eng = get_tax_engine()
+        lot_id = tax_eng.record_lot(
+            symbol=pos["symbol"],
+            quantity=pos["quantity"],
+            price=pos["entry_price"],
+            date=pos.get("opened_at", _now_iso())[:10],
+            side=pos.get("side", "long"),
+        )
+        tax_eng.close_lot(lot_id, exit_price, pos["close_time"][:10])
+        logger.info(f"Tax lot recorded for closed paper trade: {lot_id}")
+    except Exception as tax_exc:
+        logger.warning(f"Failed to record tax lot for paper trade: {tax_exc}")
+
+    logger.info(f"Paper close: {pos['symbol']} P&L ${pnl:+.2f} ({pnl_pct:+.1f}%)")
+
+    # Broadcast notification
+    pnl_label = "Profit" if pnl >= 0 else "Loss"
+    await notification_manager.notify(
+        "position_closed",
+        f"Position Closed — {pos['symbol']}",
+        f"{pnl_label}: ${pnl:+,.2f} ({pnl_pct:+.1f}%)",
+        data=pos,
+    )
+
+    return {"status": "ok", "trade": pos}
+
+
+@app.get("/api/paper/history", tags=["Paper Trading"])
+async def paper_trade_history():
+    """Get closed trade history with P&L."""
+    return {"trades": list(reversed(_paper_closed_trades))}
+
+
+@app.get("/api/paper/stats", tags=["Paper Trading"])
+async def paper_trading_stats():
+    """Get paper trading stats: total P&L, win rate, avg R, etc."""
+    trades = _paper_closed_trades
+    if not trades:
+        return {
+            "total_trades": 0,
+            "total_pnl": 0.0,
+            "win_rate": 0.0,
+            "avg_pnl": 0.0,
+            "avg_pnl_pct": 0.0,
+            "avg_r": None,
+            "best_trade": None,
+            "worst_trade": None,
+            "open_positions": len([p for p in _paper_positions.values() if p["status"] == "open"]),
+        }
+
+    total_pnl = sum(t["pnl"] for t in trades)
+    winners = [t for t in trades if t["pnl"] > 0]
+    losers = [t for t in trades if t["pnl"] <= 0]
+    win_rate = (len(winners) / len(trades)) * 100 if trades else 0
+
+    r_values = [t["r_multiple"] for t in trades if t.get("r_multiple") is not None]
+    avg_r = round(sum(r_values) / len(r_values), 2) if r_values else None
+
+    sorted_by_pnl = sorted(trades, key=lambda t: t["pnl"])
+    best = sorted_by_pnl[-1]
+    worst = sorted_by_pnl[0]
+
+    return {
+        "total_trades": len(trades),
+        "total_pnl": round(total_pnl, 2),
+        "win_rate": round(win_rate, 1),
+        "avg_pnl": round(total_pnl / len(trades), 2),
+        "avg_pnl_pct": round(sum(t["pnl_pct"] for t in trades) / len(trades), 2),
+        "avg_r": avg_r,
+        "winners": len(winners),
+        "losers": len(losers),
+        "best_trade": {"symbol": best["symbol"], "pnl": best["pnl"], "pnl_pct": best["pnl_pct"]},
+        "worst_trade": {"symbol": worst["symbol"], "pnl": worst["pnl"], "pnl_pct": worst["pnl_pct"]},
+        "open_positions": len([p for p in _paper_positions.values() if p["status"] == "open"]),
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# Authentication
+# ═══════════════════════════════════════════════════════════
+
+import hashlib
+import secrets
+import json as _json
+
+_auth_db_path = "data/lumare_auth.db"
+_auth_tokens: dict[str, str] = {}  # token -> user_id
+
+
+def _get_auth_db():
+    import sqlite3
+    conn = sqlite3.connect(_auth_db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    conn.commit()
+    # Insert demo user if not exists
+    demo_hash = hashlib.sha256("demo123".encode()).hexdigest()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+            ("demo-user-001", "demo@lumare.com", "Demo Trader", demo_hash,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    return conn
+
+
+@app.post("/api/auth/register", tags=["Auth"])
+async def auth_register(body: dict):
+    """Register a new user."""
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    name = body.get("name", "").strip()
+
+    if not email or not password or not name:
+        raise HTTPException(400, "Email, password, and name are required")
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+
+    conn = _get_auth_db()
+    existing = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+    if existing:
+        raise HTTPException(409, "Email already registered")
+
+    user_id = f"user-{secrets.token_hex(8)}"
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        (user_id, email, name, pw_hash, now),
+    )
+    conn.commit()
+
+    token = secrets.token_urlsafe(32)
+    _auth_tokens[token] = user_id
+
+    return {"token": token, "user": {"id": user_id, "email": email, "name": name, "created_at": now}}
+
+
+@app.post("/api/auth/login", tags=["Auth"])
+async def auth_login(body: dict):
+    """Login with email and password."""
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+
+    conn = _get_auth_db()
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    user = conn.execute(
+        "SELECT id, email, name, created_at FROM users WHERE email=? AND password_hash=?",
+        (email, pw_hash),
+    ).fetchone()
+
+    if not user:
+        raise HTTPException(401, "Invalid email or password")
+
+    token = secrets.token_urlsafe(32)
+    _auth_tokens[token] = user["id"]
+
+    return {
+        "token": token,
+        "user": {"id": user["id"], "email": user["email"], "name": user["name"], "created_at": user["created_at"]},
+    }
+
+
+@app.get("/api/auth/me", tags=["Auth"])
+async def auth_me(request: "Request"):
+    """Get current user from Bearer token."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "Missing token")
+    token = auth.split(" ", 1)[1]
+    user_id = _auth_tokens.get(token)
+    if not user_id:
+        raise HTTPException(401, "Invalid or expired token")
+
+    conn = _get_auth_db()
+    user = conn.execute("SELECT id, email, name, created_at FROM users WHERE id=?", (user_id,)).fetchone()
+    if not user:
+        raise HTTPException(401, "User not found")
+
+    return {"id": user["id"], "email": user["email"], "name": user["name"], "created_at": user["created_at"]}
+
+
+@app.post("/api/auth/logout", tags=["Auth"])
+async def auth_logout(request: "Request"):
+    """Invalidate token."""
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1]
+        _auth_tokens.pop(token, None)
+    return {"status": "ok"}
+
+
+# ─── Adaptive Learning Engine ─────────────────────────────
+
+def _get_learning_engine():
+    """Lazy import to avoid circular deps; reuses orchestrator's instance when available."""
+    if _orchestrator is not None and hasattr(_orchestrator, "learning"):
+        return _orchestrator.learning
+    from backend.orchestrator.learning import get_learning_engine
+    return get_learning_engine()
+
+
+@app.get("/api/learning/weights", tags=["Learning"])
+async def learning_weights(
+    regime: str = Query("RISK_ON", description="Market regime (RISK_ON, RISK_OFF, RANGE, TREND, EXPANSION)"),
+    symbol: str = Query("*", description="Symbol filter or * for global"),
+    user_id: str = Query("default"),
+):
+    """Return current adaptive weights blending static regime priors with learned performance."""
+    try:
+        engine = _get_learning_engine()
+        return engine.get_weights(regime=regime, symbol=symbol, user_id=user_id)
+    except Exception as exc:
+        logger.error(f"Learning weights error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.get("/api/learning/performance", tags=["Learning"])
+async def learning_performance(user_id: str = Query("default")):
+    """Return full performance report: win rates, Sharpe, Sortino, regime breakdowns, recommendations."""
+    try:
+        engine = _get_learning_engine()
+        return engine.get_report(user_id=user_id)
+    except Exception as exc:
+        logger.error(f"Learning performance error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.post("/api/learning/feedback", tags=["Learning"])
+async def learning_feedback(request: Request):
+    """
+    Submit outcome feedback for a previously generated signal.
+
+    Body JSON:
+        signal_id  (str)  — ID of the signal to resolve
+        outcome    (str)  — "win", "loss", or "scratch"
+        exit_price (float) — exit fill price
+        pnl        (float) — absolute PnL
+        pnl_pct    (float) — PnL as a percentage of entry
+        r_multiple (float, optional) — reward/risk ratio achieved
+    """
+    try:
+        body = await request.json()
+        signal_id = body.get("signal_id")
+        outcome = body.get("outcome")
+        exit_price = body.get("exit_price", 0)
+        pnl = body.get("pnl", 0)
+        pnl_pct = body.get("pnl_pct", 0)
+        r_multiple = body.get("r_multiple", 0)
+
+        if not signal_id or not outcome:
+            raise HTTPException(400, detail="signal_id and outcome are required")
+        if outcome not in ("win", "loss", "scratch"):
+            raise HTTPException(400, detail="outcome must be 'win', 'loss', or 'scratch'")
+
+        engine = _get_learning_engine()
+        engine.tracker.resolve_signal(
+            signal_id=signal_id,
+            outcome=outcome,
+            exit_price=float(exit_price),
+            pnl=float(pnl),
+            pnl_pct=float(pnl_pct),
+            r_multiple=float(r_multiple),
+        )
+        return {"status": "ok", "signal_id": signal_id, "outcome": outcome}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Learning feedback error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+# ═══════════════════════════════════════════════════════════
+# Tax Estimation
+# ═══════════════════════════════════════════════════════════
+
+def _get_tax_engine():
+    from backend.orchestrator.taxes import get_tax_engine
+    return get_tax_engine()
+
+
+@app.get("/api/tax/summary", tags=["Tax"])
+async def tax_summary(year: int = Query(default=2026), filing_status: str = Query(default="single")):
+    """Realized gains and estimated tax liability for a given year."""
+    try:
+        engine = _get_tax_engine()
+        gains = engine.get_realized_gains(year)
+        liability = engine.estimate_tax_liability(year, filing_status)
+        return {
+            "year": year,
+            "realized_gains": gains,
+            "liability": liability,
+        }
+    except Exception as exc:
+        logger.error(f"Tax summary error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.get("/api/tax/lots", tags=["Tax"])
+async def tax_lots(
+    symbol: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None),
+):
+    """Get tax lot details with optional filters."""
+    try:
+        engine = _get_tax_engine()
+        lots = engine.get_lots(symbol=symbol, status=status, year=year)
+        return {"lots": lots, "count": len(lots)}
+    except Exception as exc:
+        logger.error(f"Tax lots error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.get("/api/tax/harvest", tags=["Tax"])
+async def tax_harvest_candidates():
+    """Tax loss harvesting candidates from open paper positions."""
+    try:
+        engine = _get_tax_engine()
+        # Build positions from open paper positions
+        open_positions = [p for p in _paper_positions.values() if p["status"] == "open"]
+        positions = [
+            {
+                "symbol": p["symbol"],
+                "quantity": p["quantity"],
+                "entry_price": p["entry_price"],
+                "side": p.get("side", "long"),
+            }
+            for p in open_positions
+        ]
+        # Also include open tax lots
+        open_lots = engine.get_lots(status="open")
+        for lot in open_lots:
+            positions.append({
+                "symbol": lot["symbol"],
+                "quantity": lot["quantity"],
+                "entry_price": lot["entry_price"],
+                "side": lot.get("side", "long"),
+            })
+
+        # Get current prices from the WebSocket manager
+        current_prices: dict[str, float] = {}
+        for p in positions:
+            sym = p["symbol"].upper()
+            if sym not in current_prices:
+                # Try to get price from ws_manager
+                price_data = ws_manager.last_prices.get(sym)
+                if price_data and "price" in price_data:
+                    current_prices[sym] = price_data["price"]
+
+        candidates = engine.tax_loss_harvest_candidates(positions, current_prices)
+        return {"candidates": candidates, "count": len(candidates)}
+    except Exception as exc:
+        logger.error(f"Tax harvest error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.get("/api/tax/wash-sales", tags=["Tax"])
+async def tax_wash_sales():
+    """Get wash sale warnings."""
+    try:
+        engine = _get_tax_engine()
+        flags = engine.get_all_wash_sale_flags()
+        return {"wash_sales": flags, "count": len(flags)}
+    except Exception as exc:
+        logger.error(f"Tax wash sales error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.post("/api/tax/record-lot", tags=["Tax"])
+async def tax_record_lot(request: Request):
+    """
+    Manually record a tax lot.
+
+    Body JSON:
+        symbol     (str)   — ticker symbol
+        quantity   (float) — number of units
+        price      (float) — entry price per unit
+        date       (str)   — entry date (ISO format)
+        side       (str)   — 'long' or 'short' (default: 'long')
+    """
+    try:
+        body = await request.json()
+        symbol = body.get("symbol")
+        quantity = body.get("quantity")
+        price = body.get("price")
+        date = body.get("date")
+        side = body.get("side", "long")
+
+        if not all([symbol, quantity, price, date]):
+            raise HTTPException(400, detail="symbol, quantity, price, and date are required")
+
+        engine = _get_tax_engine()
+        lot_id = engine.record_lot(
+            symbol=symbol,
+            quantity=float(quantity),
+            price=float(price),
+            date=date,
+            side=side,
+        )
+        return {"status": "ok", "lot_id": lot_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Tax record lot error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+# ═══════════════════════════════════════════════════════════
+# Autonomous Bot endpoints
+# ═══════════════════════════════════════════════════════════
+
+from backend.orchestrator.autobot import autobot
+
+
+@app.post("/api/bot/start", tags=["Bot"])
+async def bot_start(request: Request):
+    try:
+        body = await request.json()
+        symbols = body.get("symbols", ["BTCUSDT", "ETHUSDT"])
+        strategies = body.get("strategies", ["momentum", "mean_reversion", "trend_following", "breakout"])
+        interval = int(body.get("interval", 60))
+        max_concurrent = int(body.get("max_concurrent", 3))
+        autobot.start(
+            symbols=symbols,
+            strategies=strategies,
+            interval_seconds=interval,
+            max_concurrent=max_concurrent,
+        )
+        return {"status": "ok", "message": "Bot started", **autobot.get_status()}
+    except Exception as exc:
+        logger.error(f"Bot start error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.post("/api/bot/stop", tags=["Bot"])
+async def bot_stop():
+    autobot.stop()
+    return {"status": "ok", "message": "Bot stopped"}
+
+
+@app.get("/api/bot/status", tags=["Bot"])
+async def bot_status():
+    autobot.update_closed_trades()
+    return autobot.get_status()
+
+
+@app.get("/api/bot/performance", tags=["Bot"])
+async def bot_performance():
+    autobot.update_closed_trades()
+    return autobot.get_performance()
+
+
+@app.get("/api/bot/signals", tags=["Bot"])
+async def bot_signals(limit: int = 50):
+    return {"signals": autobot.get_signals(limit)}
+
+
+@app.get("/api/bot/activity", tags=["Bot"])
+async def bot_activity(limit: int = 100):
+    return {"activity": autobot.get_activity_log(limit)}
+
+
+# ═══════════════════════════════════════════════════════════
+# Real Estate Portfolio endpoints
+# ═══════════════════════════════════════════════════════════
+
+_re_engine = None
+
+
+def _get_re_engine():
+    global _re_engine
+    if _re_engine is None:
+        from backend.orchestrator.realestate import RealEstateEngine
+        _re_engine = RealEstateEngine()
+    return _re_engine
+
+
+@app.get("/api/realestate/portfolio", tags=["RealEstate"])
+async def re_portfolio():
+    engine = _get_re_engine()
+    return engine.get_portfolio_summary()
+
+
+@app.get("/api/realestate/property/{property_id}", tags=["RealEstate"])
+async def re_property_detail(property_id: str):
+    engine = _get_re_engine()
+    prop = engine.get_property(property_id)
+    if not prop:
+        raise HTTPException(404, detail="Property not found")
+    metrics = engine.calculate_metrics(property_id)
+    return {**prop, "metrics": metrics}
+
+
+@app.post("/api/realestate/property", tags=["RealEstate"])
+async def re_add_property(request: Request):
+    try:
+        body = await request.json()
+        engine = _get_re_engine()
+        prop = engine.add_property(**body)
+        return {"status": "ok", "property": prop}
+    except Exception as exc:
+        logger.error(f"Real estate add error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.put("/api/realestate/property/{property_id}", tags=["RealEstate"])
+async def re_update_property(property_id: str, request: Request):
+    try:
+        body = await request.json()
+        engine = _get_re_engine()
+        with engine._conn() as conn:
+            cols = [k for k in body.keys() if k != "id"]
+            if not cols:
+                return {"status": "ok"}
+            set_clause = ", ".join(f"{c} = ?" for c in cols)
+            vals = [body[c] for c in cols]
+            conn.execute(f"UPDATE properties SET {set_clause} WHERE id = ?", vals + [property_id])
+        return {"status": "ok"}
+    except Exception as exc:
+        logger.error(f"Real estate update error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.post("/api/realestate/property/{property_id}/transaction", tags=["RealEstate"])
+async def re_add_transaction(property_id: str, request: Request):
+    try:
+        body = await request.json()
+        engine = _get_re_engine()
+        txn = engine.record_transaction(
+            property_id=property_id,
+            txn_type=body.get("type", "expense"),
+            amount=float(body.get("amount", 0)),
+            date=body.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d")),
+            description=body.get("description", ""),
+        )
+        return {"status": "ok", "transaction": txn}
+    except Exception as exc:
+        logger.error(f"Real estate transaction error: {exc}")
+        raise HTTPException(500, detail=str(exc))
+
+
+@app.get("/api/realestate/property/{property_id}/cashflow", tags=["RealEstate"])
+async def re_cashflow(property_id: str, months: int = 12):
+    engine = _get_re_engine()
+    return engine.get_cashflow_report(property_id, months)
+
+
+@app.post("/api/realestate/seed", tags=["RealEstate"])
+async def re_seed():
+    engine = _get_re_engine()
+    props = engine.seed_demo_properties()
+    return {"status": "ok", "properties": props, "count": len(props)}

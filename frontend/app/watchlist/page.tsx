@@ -7,51 +7,52 @@ import {
   Star, Plus, X, Search, ChevronUp, ChevronDown, GripVertical,
   List, LayoutGrid, Pencil, Trash2, Check, FolderPlus, Eye,
 } from "lucide-react";
+import { ExportMenu } from "@/components/ui/ExportMenu";
 
 // ─── Symbol Pool ────────────────────────────────────────────────────────────
 const SYMBOL_POOL: SymbolData[] = [
-  { symbol: "AAPL", name: "Apple Inc.", sector: "Tech", basePrice: 189.45, mcap: "2.94T" },
-  { symbol: "MSFT", name: "Microsoft Corp.", sector: "Tech", basePrice: 417.88, mcap: "3.11T" },
-  { symbol: "NVDA", name: "NVIDIA Corp.", sector: "Tech", basePrice: 875.32, mcap: "2.15T" },
-  { symbol: "GOOGL", name: "Alphabet Inc.", sector: "Tech", basePrice: 155.72, mcap: "1.93T" },
-  { symbol: "AMZN", name: "Amazon.com Inc.", sector: "Tech", basePrice: 186.13, mcap: "1.94T" },
-  { symbol: "META", name: "Meta Platforms", sector: "Tech", basePrice: 505.95, mcap: "1.29T" },
-  { symbol: "TSLA", name: "Tesla Inc.", sector: "Auto", basePrice: 175.21, mcap: "558B" },
-  { symbol: "TSM", name: "Taiwan Semi.", sector: "Tech", basePrice: 152.30, mcap: "789B" },
-  { symbol: "AVGO", name: "Broadcom Inc.", sector: "Tech", basePrice: 1320.55, mcap: "612B" },
-  { symbol: "ORCL", name: "Oracle Corp.", sector: "Tech", basePrice: 127.40, mcap: "351B" },
-  { symbol: "BTC", name: "Bitcoin", sector: "Crypto", basePrice: 67842.00, mcap: "1.33T" },
-  { symbol: "ETH", name: "Ethereum", sector: "Crypto", basePrice: 3521.45, mcap: "423B" },
-  { symbol: "SOL", name: "Solana", sector: "Crypto", basePrice: 142.80, mcap: "63.2B" },
-  { symbol: "BNB", name: "BNB", sector: "Crypto", basePrice: 598.30, mcap: "89.5B" },
-  { symbol: "XRP", name: "Ripple", sector: "Crypto", basePrice: 0.5234, mcap: "28.6B" },
-  { symbol: "ADA", name: "Cardano", sector: "Crypto", basePrice: 0.4521, mcap: "16.1B" },
-  { symbol: "DOGE", name: "Dogecoin", sector: "Crypto", basePrice: 0.0823, mcap: "11.7B" },
-  { symbol: "LINK", name: "Chainlink", sector: "Crypto", basePrice: 14.52, mcap: "8.5B" },
-  { symbol: "JPM", name: "JPMorgan Chase", sector: "Finance", basePrice: 198.72, mcap: "571B" },
-  { symbol: "V", name: "Visa Inc.", sector: "Finance", basePrice: 279.33, mcap: "573B" },
-  { symbol: "MA", name: "Mastercard Inc.", sector: "Finance", basePrice: 458.90, mcap: "428B" },
-  { symbol: "BAC", name: "Bank of America", sector: "Finance", basePrice: 37.42, mcap: "296B" },
-  { symbol: "GS", name: "Goldman Sachs", sector: "Finance", basePrice: 412.50, mcap: "137B" },
-  { symbol: "JNJ", name: "Johnson & Johnson", sector: "Health", basePrice: 156.82, mcap: "378B" },
-  { symbol: "UNH", name: "UnitedHealth Group", sector: "Health", basePrice: 527.15, mcap: "487B" },
-  { symbol: "PFE", name: "Pfizer Inc.", sector: "Health", basePrice: 27.35, mcap: "153B" },
-  { symbol: "LLY", name: "Eli Lilly", sector: "Health", basePrice: 792.40, mcap: "752B" },
-  { symbol: "ABBV", name: "AbbVie Inc.", sector: "Health", basePrice: 171.23, mcap: "302B" },
-  { symbol: "WMT", name: "Walmart Inc.", sector: "Retail", basePrice: 168.50, mcap: "454B" },
-  { symbol: "COST", name: "Costco Wholesale", sector: "Retail", basePrice: 728.90, mcap: "323B" },
-  { symbol: "HD", name: "Home Depot", sector: "Retail", basePrice: 362.18, mcap: "360B" },
-  { symbol: "DIS", name: "Walt Disney Co.", sector: "Media", basePrice: 112.45, mcap: "205B" },
-  { symbol: "NFLX", name: "Netflix Inc.", sector: "Media", basePrice: 628.30, mcap: "272B" },
-  { symbol: "CRM", name: "Salesforce Inc.", sector: "Tech", basePrice: 272.15, mcap: "264B" },
-  { symbol: "AMD", name: "AMD Inc.", sector: "Tech", basePrice: 178.92, mcap: "289B" },
-  { symbol: "INTC", name: "Intel Corp.", sector: "Tech", basePrice: 43.28, mcap: "183B" },
-  { symbol: "QCOM", name: "Qualcomm Inc.", sector: "Tech", basePrice: 168.75, mcap: "188B" },
-  { symbol: "BA", name: "Boeing Co.", sector: "Industrial", basePrice: 195.60, mcap: "118B" },
-  { symbol: "CAT", name: "Caterpillar Inc.", sector: "Industrial", basePrice: 352.44, mcap: "172B" },
-  { symbol: "XOM", name: "Exxon Mobil", sector: "Energy", basePrice: 108.32, mcap: "432B" },
-  { symbol: "CVX", name: "Chevron Corp.", sector: "Energy", basePrice: 156.80, mcap: "291B" },
-  { symbol: "COP", name: "ConocoPhillips", sector: "Energy", basePrice: 118.45, mcap: "139B" },
+  { symbol: "AAPL", name: "Apple Inc.", sector: "Tech", basePrice: 189.45, mcap: "2.94T", floatShares: "15.2B", shortFloat: 0.7 },
+  { symbol: "MSFT", name: "Microsoft Corp.", sector: "Tech", basePrice: 417.88, mcap: "3.11T", floatShares: "7.43B", shortFloat: 0.5 },
+  { symbol: "NVDA", name: "NVIDIA Corp.", sector: "Tech", basePrice: 875.32, mcap: "2.15T", floatShares: "2.45B", shortFloat: 1.2 },
+  { symbol: "GOOGL", name: "Alphabet Inc.", sector: "Tech", basePrice: 155.72, mcap: "1.93T", floatShares: "5.87B", shortFloat: 0.8 },
+  { symbol: "AMZN", name: "Amazon.com Inc.", sector: "Tech", basePrice: 186.13, mcap: "1.94T", floatShares: "10.3B", shortFloat: 0.9 },
+  { symbol: "META", name: "Meta Platforms", sector: "Tech", basePrice: 505.95, mcap: "1.29T", floatShares: "2.25B", shortFloat: 0.6 },
+  { symbol: "TSLA", name: "Tesla Inc.", sector: "Auto", basePrice: 175.21, mcap: "558B", floatShares: "2.84B", shortFloat: 3.1 },
+  { symbol: "TSM", name: "Taiwan Semi.", sector: "Tech", basePrice: 152.30, mcap: "789B", floatShares: "5.18B", shortFloat: 0.4 },
+  { symbol: "AVGO", name: "Broadcom Inc.", sector: "Tech", basePrice: 1320.55, mcap: "612B", floatShares: "464M", shortFloat: 1.1 },
+  { symbol: "ORCL", name: "Oracle Corp.", sector: "Tech", basePrice: 127.40, mcap: "351B", floatShares: "2.72B", shortFloat: 1.3 },
+  { symbol: "BTC", name: "Bitcoin", sector: "Crypto", basePrice: 67842.00, mcap: "1.33T", floatShares: "19.6M", shortFloat: 0 },
+  { symbol: "ETH", name: "Ethereum", sector: "Crypto", basePrice: 3521.45, mcap: "423B", floatShares: "120M", shortFloat: 0 },
+  { symbol: "SOL", name: "Solana", sector: "Crypto", basePrice: 142.80, mcap: "63.2B", floatShares: "442M", shortFloat: 0 },
+  { symbol: "BNB", name: "BNB", sector: "Crypto", basePrice: 598.30, mcap: "89.5B", floatShares: "150M", shortFloat: 0 },
+  { symbol: "XRP", name: "Ripple", sector: "Crypto", basePrice: 0.5234, mcap: "28.6B", floatShares: "54.6B", shortFloat: 0 },
+  { symbol: "ADA", name: "Cardano", sector: "Crypto", basePrice: 0.4521, mcap: "16.1B", floatShares: "35.6B", shortFloat: 0 },
+  { symbol: "DOGE", name: "Dogecoin", sector: "Crypto", basePrice: 0.0823, mcap: "11.7B", floatShares: "142B", shortFloat: 0 },
+  { symbol: "LINK", name: "Chainlink", sector: "Crypto", basePrice: 14.52, mcap: "8.5B", floatShares: "587M", shortFloat: 0 },
+  { symbol: "JPM", name: "JPMorgan Chase", sector: "Finance", basePrice: 198.72, mcap: "571B", floatShares: "2.87B", shortFloat: 0.8 },
+  { symbol: "V", name: "Visa Inc.", sector: "Finance", basePrice: 279.33, mcap: "573B", floatShares: "1.65B", shortFloat: 0.6 },
+  { symbol: "MA", name: "Mastercard Inc.", sector: "Finance", basePrice: 458.90, mcap: "428B", floatShares: "928M", shortFloat: 0.5 },
+  { symbol: "BAC", name: "Bank of America", sector: "Finance", basePrice: 37.42, mcap: "296B", floatShares: "7.92B", shortFloat: 1.1 },
+  { symbol: "GS", name: "Goldman Sachs", sector: "Finance", basePrice: 412.50, mcap: "137B", floatShares: "332M", shortFloat: 1.4 },
+  { symbol: "JNJ", name: "Johnson & Johnson", sector: "Health", basePrice: 156.82, mcap: "378B", floatShares: "2.41B", shortFloat: 0.7 },
+  { symbol: "UNH", name: "UnitedHealth Group", sector: "Health", basePrice: 527.15, mcap: "487B", floatShares: "921M", shortFloat: 0.6 },
+  { symbol: "PFE", name: "Pfizer Inc.", sector: "Health", basePrice: 27.35, mcap: "153B", floatShares: "5.61B", shortFloat: 2.3 },
+  { symbol: "LLY", name: "Eli Lilly", sector: "Health", basePrice: 792.40, mcap: "752B", floatShares: "949M", shortFloat: 0.5 },
+  { symbol: "ABBV", name: "AbbVie Inc.", sector: "Health", basePrice: 171.23, mcap: "302B", floatShares: "1.77B", shortFloat: 0.8 },
+  { symbol: "WMT", name: "Walmart Inc.", sector: "Retail", basePrice: 168.50, mcap: "454B", floatShares: "2.69B", shortFloat: 0.4 },
+  { symbol: "COST", name: "Costco Wholesale", sector: "Retail", basePrice: 728.90, mcap: "323B", floatShares: "443M", shortFloat: 0.7 },
+  { symbol: "HD", name: "Home Depot", sector: "Retail", basePrice: 362.18, mcap: "360B", floatShares: "992M", shortFloat: 0.9 },
+  { symbol: "DIS", name: "Walt Disney Co.", sector: "Media", basePrice: 112.45, mcap: "205B", floatShares: "1.82B", shortFloat: 1.5 },
+  { symbol: "NFLX", name: "Netflix Inc.", sector: "Media", basePrice: 628.30, mcap: "272B", floatShares: "432M", shortFloat: 1.8 },
+  { symbol: "CRM", name: "Salesforce Inc.", sector: "Tech", basePrice: 272.15, mcap: "264B", floatShares: "970M", shortFloat: 1.0 },
+  { symbol: "AMD", name: "AMD Inc.", sector: "Tech", basePrice: 178.92, mcap: "289B", floatShares: "1.62B", shortFloat: 3.5 },
+  { symbol: "INTC", name: "Intel Corp.", sector: "Tech", basePrice: 43.28, mcap: "183B", floatShares: "4.23B", shortFloat: 2.8 },
+  { symbol: "QCOM", name: "Qualcomm Inc.", sector: "Tech", basePrice: 168.75, mcap: "188B", floatShares: "1.11B", shortFloat: 1.2 },
+  { symbol: "BA", name: "Boeing Co.", sector: "Industrial", basePrice: 195.60, mcap: "118B", floatShares: "601M", shortFloat: 4.2 },
+  { symbol: "CAT", name: "Caterpillar Inc.", sector: "Industrial", basePrice: 352.44, mcap: "172B", floatShares: "487M", shortFloat: 0.9 },
+  { symbol: "XOM", name: "Exxon Mobil", sector: "Energy", basePrice: 108.32, mcap: "432B", floatShares: "3.99B", shortFloat: 0.5 },
+  { symbol: "CVX", name: "Chevron Corp.", sector: "Energy", basePrice: 156.80, mcap: "291B", floatShares: "1.85B", shortFloat: 0.6 },
+  { symbol: "COP", name: "ConocoPhillips", sector: "Energy", basePrice: 118.45, mcap: "139B", floatShares: "1.17B", shortFloat: 1.3 },
 ];
 
 const SYMBOL_MAP = new Map(SYMBOL_POOL.map((s) => [s.symbol, s]));
@@ -63,6 +64,8 @@ interface SymbolData {
   sector: string;
   basePrice: number;
   mcap: string;
+  floatShares: string;
+  shortFloat: number;
 }
 
 interface WatchlistItem {
@@ -87,7 +90,7 @@ interface LivePrice {
   prevPrice: number;
 }
 
-type SortKey = "symbol" | "name" | "price" | "changePct" | "volume" | "mcap" | "high52w" | "low52w";
+type SortKey = "symbol" | "name" | "price" | "changePct" | "volume" | "mcap" | "high52w" | "low52w" | "floatShares" | "shortFloat";
 type SortDir = "asc" | "desc";
 
 // ─── Default Watchlists ─────────────────────────────────────────────────────
@@ -264,6 +267,8 @@ export default function WatchlistPage() {
         case "mcap": cmp = parseMcap(sa.mcap) - parseMcap(sb.mcap); break;
         case "high52w": cmp = (la?.high52w || 0) - (lb?.high52w || 0); break;
         case "low52w": cmp = (la?.low52w || 0) - (lb?.low52w || 0); break;
+        case "floatShares": cmp = parseMcap(sa.floatShares) - parseMcap(sb.floatShares); break;
+        case "shortFloat": cmp = sa.shortFloat - sb.shortFloat; break;
       }
       return sortDir === "asc" ? cmp : -cmp;
     });
@@ -348,6 +353,36 @@ export default function WatchlistPage() {
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <ExportMenu
+            data={sortedItems.map((item) => {
+              const d = SYMBOL_MAP.get(item.symbol);
+              const lp = livePrices[item.symbol];
+              return {
+                symbol: item.symbol,
+                name: d?.name ?? "",
+                sector: d?.sector ?? "",
+                price: lp ? +lp.price.toFixed(2) : 0,
+                changePct: lp ? +lp.changePct.toFixed(2) : 0,
+                volume: lp?.volume ?? 0,
+                mcap: d?.mcap ?? "",
+                high52w: lp ? +lp.high52w.toFixed(2) : 0,
+                low52w: lp ? +lp.low52w.toFixed(2) : 0,
+              } as Record<string, unknown>;
+            })}
+            filename={`lumare_watchlist_${activeList.name.toLowerCase().replace(/\s+/g, "_")}`}
+            title={`Watchlist — ${activeList.name}`}
+            columns={[
+              { key: "symbol", label: "Symbol" },
+              { key: "name", label: "Name" },
+              { key: "sector", label: "Sector" },
+              { key: "price", label: "Price" },
+              { key: "changePct", label: "Change %" },
+              { key: "volume", label: "Volume" },
+              { key: "mcap", label: "Mkt Cap" },
+              { key: "high52w", label: "52W High" },
+              { key: "low52w", label: "52W Low" },
+            ]}
+          />
           <button
             onClick={() => setCompact(!compact)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary border border-border rounded-button hover:bg-bg-elevated transition-colors"
@@ -472,6 +507,8 @@ export default function WatchlistPage() {
                   <TH col="changePct" label="Change %" align="right" />
                   <TH col="volume" label="Volume" align="right" />
                   <TH col="mcap" label="Mkt Cap" align="right" />
+                  <TH col="floatShares" label="Float" align="right" />
+                  <TH col="shortFloat" label="SI %" align="right" />
                   <TH col="high52w" label="52W High" align="right" />
                   <TH col="low52w" label="52W Low" align="right" />
                   <th className={`px-3 ${compact ? "py-1.5" : "py-2.5"} text-xs font-medium text-text-secondary uppercase tracking-wider text-center`}>
@@ -528,6 +565,16 @@ export default function WatchlistPage() {
                       {/* Market Cap */}
                       <td className={`px-3 ${compact ? "py-1" : "py-2.5"} text-right`}>
                         <span className="font-mono text-xs text-text-secondary">{data.mcap}</span>
+                      </td>
+                      {/* Float */}
+                      <td className={`px-3 ${compact ? "py-1" : "py-2.5"} text-right`}>
+                        <span className="font-mono text-xs text-text-secondary">{data.floatShares}</span>
+                      </td>
+                      {/* Short Interest */}
+                      <td className={`px-3 ${compact ? "py-1" : "py-2.5"} text-right`}>
+                        <span className={`font-mono text-xs ${data.shortFloat >= 10 ? "text-loss" : data.shortFloat >= 3 ? "text-yellow-400" : "text-text-secondary"}`}>
+                          {data.shortFloat > 0 ? data.shortFloat.toFixed(1) + "%" : "—"}
+                        </span>
                       </td>
                       {/* 52W High */}
                       <td className={`px-3 ${compact ? "py-1" : "py-2.5"} text-right`}>

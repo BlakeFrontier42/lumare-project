@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react";
 import { Maximize2, Minimize2, Link, Unlink, ChevronDown } from "lucide-react";
 import { Card } from "@/components/ui/Card";
-import { TradingChart } from "@/components/charts/TradingChart";
+import { TradingViewChart } from "@/components/charts/TradingViewChart";
 
 const SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "SPY", "QQQ", "AAPL", "TSLA",
@@ -172,12 +172,10 @@ export default function ChartsPage() {
 
         {/* Chart body */}
         <div className="flex-1 min-h-0">
-          <TradingChart
+          <TradingViewChart
             symbol={cell.symbol}
-            initialTimeframe={cell.timeframe}
-            height={fullHeight ? fullHeight - 34 : undefined}
-            showTimeframes
-            showVolume
+            height={fullHeight ? fullHeight - 34 : 400}
+            interval={cell.timeframe === "5M" ? "5" : cell.timeframe === "15M" ? "15" : cell.timeframe === "1H" ? "60" : cell.timeframe === "4H" ? "240" : "D"}
           />
         </div>
       </Card>
