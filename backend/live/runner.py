@@ -88,7 +88,9 @@ class LiveRunner:
 
         # Engines
         self.aggregator = aggregator or DataAggregator(self.settings, self.storage)
-        self.regime_engine = RegimeClassifier(self.settings)
+        self.regime_engine = RegimeClassifier(
+            confirmation_bars=self.settings.regime.regime_confirmation_bars,
+        )
         self.trend_engine = TrendEngine(self.settings)
         self.momentum_engine = MomentumEngine(self.settings)
         self.structure_engine = StructureEngine(self.settings)

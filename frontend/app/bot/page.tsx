@@ -33,7 +33,17 @@ import {
   Unlock,
 } from "lucide-react";
 
+import { useAppStore, type AssetClass } from "@/store";
+
 const API = "";
+
+// Symbol universe per asset class — drives the config panel
+const ASSET_CLASS_UNIVERSE: Record<AssetClass, string[]> = {
+  crypto: ["BTC", "ETH", "SOL", "XRP", "AVAX", "ADA", "DOT", "LINK"],
+  equity: ["SPY", "QQQ", "AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "GOOGL", "META"],
+  futures: ["ES", "NQ", "CL", "GC", "SI", "ZB"],
+  options: ["SPY", "QQQ", "AAPL", "TSLA", "NVDA", "MSFT"],
+};
 
 // ── Types ────────────────────────────────────────────────────
 interface BotStatus {
@@ -431,8 +441,12 @@ export default function BotPage() {
   const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
   const [tickCounter, setTickCounter] = useState(0);
 
-  // Config state
-  const [cfgSymbols, setCfgSymbols] = useState<string[]>(["BTC", "ETH", "SOL", "SPY", "AAPL"]);
+  // Asset class mode (persisted via zustand)
+  const botAssetClass = useAppStore((s) => s.botAssetClass);
+  const setBotAssetClass = useAppStore((s) => s.setBotAssetClass);
+
+  // Config state — initialise symbols from the active asset class
+  const [cfgSymbols, setCfgSymbols] = useState<string[]>(ASSET_CLASS_UNIVERSE[botAssetClass]);
   const [cfgStrategies, setCfgStrategies] = useState<string[]>(["momentum", "mean_reversion", "trend_following", "breakout"]);
   const [cfgInterval, setCfgInterval] = useState(60);
   const [cfgMaxPositions, setCfgMaxPositions] = useState(3);
@@ -791,6 +805,27 @@ export default function BotPage() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Asset-class switcher pills */}
+      <div className="flex gap-2 px-4 md:px-6 mt-4">
+        {(["crypto", "equity", "futures", "options"] as const).map((cls) => (
+          <button
+            key={cls}
+            disabled={isRunning}
+            onClick={() => {
+              setBotAssetClass(cls);
+              setCfgSymbols(ASSET_CLASS_UNIVERSE[cls]);
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors ${
+              botAssetClass === cls
+                ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
+                : "bg-[#111] text-gray-500 hover:text-gray-300 border border-[#1a1a1a]"
+            } ${isRunning ? "opacity-50 cursor-not-allowed" : ""}`}
+          >
+            {cls}
+          </button>
+        ))}
       </div>
 
       {/* Tabs */}

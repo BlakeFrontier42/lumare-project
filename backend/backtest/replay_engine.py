@@ -28,6 +28,7 @@ from backend.backtest.performance_metrics import (
     check_overfitting,
     validate_results,
 )
+from backend.core.asset_profiles import AssetProfile, get_profile
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +243,11 @@ class ReplayEngine:
         self._bar_count: int = 0
         self._scores_logged: int = 0  # diagnostic: log first few scoring events at INFO
 
+        # Active asset profile — set per run() call based on symbol.
+        # Defaults to equity (conservative) until run() picks a profile.
+        self._profile: AssetProfile = get_profile("SPY")
+        self._regime_error_logged: bool = False
+
     # ------------------------------------------------------------------
     # Main backtest run
     # ------------------------------------------------------------------
@@ -281,6 +287,16 @@ class ReplayEngine:
 
         # Reset state
         self._reset(initial_capital)
+
+        # Pick asset profile for this symbol (crypto/equity/futures/options)
+        self._profile = get_profile(symbol)
+        self._regime_error_logged = False
+        logger.info(
+            "Profile: {} | regime_mode={} | score_threshold={} | rr={} | stop_atr={}",
+            self._profile.name, self._profile.regime_mode,
+            self._profile.score_threshold, self._profile.rr_ratio,
+            self._profile.stop_atr_mult,
+        )
 
         # Load historical 5M candles
         candles_5m = self._load_candles(symbol, start_date, end_date)
@@ -466,9 +482,12 @@ class ReplayEngine:
         # 7. Check if score threshold met, generate trade proposal
         best_side = None
         best_score = 0.0
-        # Shorts require higher conviction (crypto has structural long bias)
-        short_threshold = self.SCORE_THRESHOLD + 8
-        if long_score >= self.SCORE_THRESHOLD and long_score >= short_score:
+        # Shorts require higher conviction (asset profile defines long bias offset)
+        long_threshold = self._profile.score_threshold
+        short_threshold = long_threshold + self._profile.short_threshold_bonus
+        if not self._profile.allow_shorts:
+            short_threshold = float("inf")
+        if long_score >= long_threshold and long_score >= short_score:
             best_side = "long"
             best_score = long_score
         elif short_score >= short_threshold and short_score > long_score:
@@ -507,7 +526,7 @@ class ReplayEngine:
         if len(self._closed_trades) >= 4:
             last_4 = self._closed_trades[-4:]
             if all(t["pnl"] < 0 for t in last_4):
-                if best_score < 65:
+                if best_score < self._profile.score_threshold:
                     return  # Need stronger conviction after losing streak
 
         # Don't enter if already in a position for this symbol on this side
@@ -603,13 +622,25 @@ class ReplayEngine:
             }
 
             result = self.regime_engine.classify(market_data_dict)
-            regime = result.state.value if hasattr(result, "state") else "RISK_ON"
+            regime_raw = result.state.value if hasattr(result, "state") else "RISK_ON"
             if self._bar_count < 5000 and self._bar_count % 1000 == 0:
                 logger.info("Regime debug bar={}: adx={:.1f} atr_pct={:.0f} vol_pct={:.0f} vol_ratio={:.2f} breakout={} → {}",
-                            self._bar_count, adx_val, atr_pct, vol_pct, vol_ratio, breakout, regime)
+                            self._bar_count, adx_val, atr_pct, vol_pct, vol_ratio, breakout, regime_raw)
         except Exception as exc:
-            logger.debug("Regime classification failed: {}", exc)
+            if not self._regime_error_logged:
+                logger.warning("Regime classification failed (first occurrence): {}", exc)
+                self._regime_error_logged = True
+            else:
+                logger.debug("Regime classification failed: {}", exc)
+            regime_raw = "RISK_ON"
+
+        # Apply per-asset profile gating
+        if self._profile.regime_mode == "bypass":
             regime = "RISK_ON"
+        elif self._profile.regime_mode == "permissive":
+            regime = "RISK_ON" if regime_raw == "CHAOTIC" else regime_raw
+        else:  # strict
+            regime = regime_raw
 
         if not self._regime_history or self._regime_history[-1].get("regime") != regime:
             self._regime_history.append({
@@ -678,10 +709,11 @@ class ReplayEngine:
         close = bar["close"]
         atr = self._estimate_atr(close)
 
-        # Position sizing: risk 1% of equity per trade, stop at 2.0 ATR
+        # Position sizing: per-asset profile risk multiplier x base 1% per trade
+        prof = self._profile
         equity = self._total_equity(close)
-        risk_per_trade = equity * 0.01
-        stop_distance = atr * 2.0
+        risk_per_trade = equity * 0.01 * prof.risk_per_trade_mult
+        stop_distance = atr * prof.stop_atr_mult
         if stop_distance <= 0:
             stop_distance = close * 0.02  # fallback 2%
 
@@ -694,9 +726,8 @@ class ReplayEngine:
             quantity = max_notional / close
             notional = max_notional
 
-        # R:R ratio: 2.5:1. With a 2 ATR stop, take profit at 5 ATR gives
-        # enough room for trending moves to play out.
-        rr_ratio = 2.5
+        # R:R ratio defined per asset profile.
+        rr_ratio = prof.rr_ratio
 
         if side == "long":
             limit_price = close * 0.9998
@@ -707,9 +738,8 @@ class ReplayEngine:
             stop_loss = close + stop_distance
             take_profit = close - stop_distance * rr_ratio
 
-        # Trailing stop: 4.0 ATR trail distance (2x stop distance).
-        # Wide enough to avoid 5M noise whipsaws while still locking gains.
-        trailing_stop_dist = stop_distance * 2.0
+        # Trailing stop: profile-defined ATR multiple of stop distance.
+        trailing_stop_dist = stop_distance * prof.trailing_mult
 
         return {
             "symbol": symbol,

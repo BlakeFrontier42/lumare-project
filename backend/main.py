@@ -92,7 +92,9 @@ class LumareEngine:
         )
 
         # Core engines
-        self.regime_engine = RegimeClassifier(self.settings)
+        self.regime_engine = RegimeClassifier(
+            confirmation_bars=self.settings.regime.regime_confirmation_bars,
+        )
         self.trend_engine = TrendEngine(self.settings)
         self.momentum_engine = MomentumEngine(self.settings)
         self.structure_engine = StructureEngine(self.settings)

@@ -27,6 +27,7 @@ export interface WatchlistItem {
 }
 
 export type MarketRegime = "risk-on" | "risk-off" | "transitional";
+export type AssetClass = "crypto" | "equity" | "futures" | "options";
 
 // ── App Store ──────────────────────────────────────────────────────────────
 
@@ -54,6 +55,10 @@ interface AppState {
   setActiveAsset: (ticker: string | null) => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+
+  // Bot asset class mode
+  botAssetClass: AssetClass;
+  setBotAssetClass: (cls: AssetClass) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -94,4 +99,8 @@ export const useAppStore = create<AppState>((set) => ({
   setActiveAsset: (ticker) => set({ activeAsset: ticker }),
   searchQuery: "",
   setSearchQuery: (query) => set({ searchQuery: query }),
+
+  // Bot asset class mode
+  botAssetClass: "crypto",
+  setBotAssetClass: (cls) => set({ botAssetClass: cls }),
 }));
