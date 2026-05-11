@@ -300,19 +300,26 @@ class LiveRunner:
 
             if order.status.value not in ("REJECTED",):
                 self.state.total_trades += 1
-                self.storage.store_trade({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "symbol": symbol,
-                    "direction": direction,
-                    "entry_price": proposal.entry_price,
-                    "stop_price": proposal.stop_price,
-                    "size": adjusted_size,
-                    "leverage": proposal.leverage,
-                    "score": total_score,
-                    "regime": regime_state.value,
-                    "status": "open",
-                    "order_id": order.order_id,
-                })
+                try:
+                    self.storage.store_trade({
+                        "trade_id": order.order_id,
+                        "symbol": symbol,
+                        "side": direction,  # storage requires LONG/SHORT
+                        "entry_time": datetime.now(timezone.utc).isoformat(),
+                        "entry_price": float(proposal.entry_price),
+                        "quantity": float(adjusted_size),
+                        "leverage": float(proposal.leverage),
+                        "stop_loss": float(proposal.stop_price),
+                        "take_profit": float(proposal.tp1_price),
+                        "risk_pct": float(proposal.risk_pct),
+                        "signal_score": int(total_score),
+                        "regime": regime_state.value,
+                        "status": "OPEN",
+                        "strategy": "composite",
+                        "timeframe": "5M",
+                    })
+                except Exception as exc:
+                    logger.debug(f"Trade store skipped: {exc}")
                 logger.info(
                     f"TRADE: {direction} {adjusted_size:.4f} {symbol} @ {proposal.entry_price:.2f} "
                     f"(score={total_score:.0f}, regime={regime_state.value})"

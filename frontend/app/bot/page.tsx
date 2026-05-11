@@ -448,6 +448,9 @@ export default function BotPage() {
   // Config state — initialise symbols from the active asset class
   const [cfgSymbols, setCfgSymbols] = useState<string[]>(ASSET_CLASS_UNIVERSE[botAssetClass]);
   const [cfgStrategies, setCfgStrategies] = useState<string[]>(["momentum", "mean_reversion", "trend_following", "breakout"]);
+  // Demo mode lowers the score threshold so trades fire on mock data.
+  // In Live/Paper mode the production threshold (70) applies.
+  const [demoMode, setDemoMode] = useState<boolean>(true);
   const [cfgInterval, setCfgInterval] = useState(60);
   const [cfgMaxPositions, setCfgMaxPositions] = useState(3);
   const [showConfig, setShowConfig] = useState(false);
@@ -478,27 +481,13 @@ export default function BotPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Initialize mock data
-  useEffect(() => {
-    setPositions(generateMockPositions());
-    setClosedTrades(generateMockClosedTrades());
-  }, []);
-
-  // Price tick simulation every 2s
+  // Heartbeat tick — drives flash animations between API polls.
+  // No longer mutates positions (real prices come from the backend
+  // via fetchAll → /api/bot/positions).
   useEffect(() => {
     tickRef.current = setInterval(() => {
       setTickCounter((c) => c + 1);
-      setPositions((prev) =>
-        prev.map((pos) => {
-          const base = BASE_PRICES[pos.symbol] || pos.entryPrice;
-          const volatility = base * 0.002;
-          const drift = Math.sin(Date.now() / 10000 + pos.id.charCodeAt(4)) * volatility;
-          const noise = (Math.random() - 0.5) * volatility * 0.5;
-          const newPrice = Math.max(pos.currentPrice + drift * 0.1 + noise, base * 0.9);
-          return { ...pos, currentPrice: parseFloat(newPrice.toFixed(pos.symbol === "XRP" || pos.symbol === "ADA" ? 4 : pos.symbol === "DOT" || pos.symbol === "LINK" || pos.symbol === "SOL" || pos.symbol === "AVAX" ? 2 : pos.entryPrice > 1000 ? 1 : 2)) };
-        })
-      );
-    }, 2000);
+    }, 1000);
     return () => {
       if (tickRef.current) clearInterval(tickRef.current);
     };
@@ -524,18 +513,22 @@ export default function BotPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [sRes, pRes, sigRes, actRes] = await Promise.all([
+      const [sRes, pRes, sigRes, actRes, posRes, trdRes] = await Promise.all([
         fetch(`${API}/api/bot/status`).then((r) => r.json()),
         fetch(`${API}/api/bot/performance`).then((r) => r.json()),
         fetch(`${API}/api/bot/signals?limit=50`).then((r) => r.json()),
         fetch(`${API}/api/bot/activity?limit=100`).then((r) => r.json()),
+        fetch(`${API}/api/bot/positions`).then((r) => r.json()),
+        fetch(`${API}/api/bot/trades?limit=100`).then((r) => r.json()),
       ]);
       setStatus(sRes);
       setPerf(pRes);
       setSignals(sigRes.signals || []);
       setActivity(actRes.activity || []);
+      setPositions(posRes.positions || []);
+      setClosedTrades(trdRes.trades || []);
     } catch {
-      // API offline -- use defaults
+      // API offline -- keep previous state, don't blow away
     } finally {
       setLoading(false);
     }
@@ -606,6 +599,11 @@ export default function BotPage() {
           strategies: cfgStrategies,
           interval: cfgInterval,
           max_concurrent: cfgMaxPositions,
+          mode: "paper",
+          // Demo mode runs a permissive score floor so the operator sees
+          // signals materialise into trades within the first cycle on
+          // sim data. Live/Paper-production uses settings.trade.min_score_to_trade (70).
+          min_score: demoMode ? 5 : undefined,
         }),
       });
       await fetchAll();
@@ -622,28 +620,20 @@ export default function BotPage() {
     setStopping(false);
   };
 
-  const handleClosePosition = (posId: string) => {
-    setPositions((prev) => {
-      const pos = prev.find((p) => p.id === posId);
-      if (!pos) return prev;
-      const pnl = (pos.direction === "LONG" ? pos.currentPrice - pos.entryPrice : pos.entryPrice - pos.currentPrice) * pos.quantity;
-      const closed: ClosedTrade = {
-        id: `ct-closed-${posId}`,
-        symbol: pos.symbol,
-        direction: pos.direction,
-        strategy: pos.strategy,
-        entryPrice: pos.entryPrice,
-        exitPrice: pos.currentPrice,
-        quantity: pos.quantity,
-        stopLoss: pos.stopLoss,
-        takeProfit: pos.takeProfit,
-        entryTime: pos.entryTime,
-        exitTime: Date.now(),
-        pnl,
-      };
-      setClosedTrades((ct) => [...ct, closed]);
-      return prev.filter((p) => p.id !== posId);
-    });
+  const handleClosePosition = async (posId: string) => {
+    const pos = positions.find((p) => p.id === posId);
+    if (!pos) return;
+    // Optimistic remove for snappy UX; next poll will reconcile from backend.
+    setPositions((prev) => prev.filter((p) => p.id !== posId));
+    try {
+      await fetch(
+        `${API}/api/bot/positions/${encodeURIComponent(pos.symbol)}/close`,
+        { method: "POST" },
+      );
+      await fetchAll();
+    } catch {
+      /* leave reconciliation to next poll */
+    }
   };
 
   const toggleSymbol = (sym: string) => {
@@ -807,8 +797,8 @@ export default function BotPage() {
         )}
       </div>
 
-      {/* Asset-class switcher pills */}
-      <div className="flex gap-2 px-4 md:px-6 mt-4">
+      {/* Asset-class switcher pills + Demo/Live mode */}
+      <div className="flex gap-2 px-4 md:px-6 mt-4 items-center flex-wrap">
         {(["crypto", "equity", "futures", "options"] as const).map((cls) => (
           <button
             key={cls}
@@ -826,6 +816,24 @@ export default function BotPage() {
             {cls}
           </button>
         ))}
+        <span className="w-px h-5 bg-[#1a1a1a] mx-1" />
+        <button
+          disabled={isRunning}
+          onClick={() => setDemoMode((v) => !v)}
+          title={
+            demoMode
+              ? "Demo Mode: low score threshold so trades fire on sim data"
+              : "Live Mode: production score threshold (70+)"
+          }
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
+            demoMode
+              ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+              : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+          } ${isRunning ? "opacity-50 cursor-not-allowed" : ""}`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${demoMode ? "bg-amber-400" : "bg-emerald-400 animate-pulse"}`} />
+          {demoMode ? "Demo" : "Live"}
+        </button>
       </div>
 
       {/* Tabs */}

@@ -1992,6 +1992,12 @@ async def bot_trades(limit: int = 100):
     return {"trades": autobot.get_closed_trades(limit)}
 
 
+@app.post("/api/bot/positions/{symbol}/close", tags=["Bot"])
+async def bot_close_position(symbol: str):
+    """Force-close an open position at market price."""
+    return autobot.close_position(symbol)
+
+
 # ═══════════════════════════════════════════════════════════
 # Real Estate Portfolio endpoints
 # ═══════════════════════════════════════════════════════════

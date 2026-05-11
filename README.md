@@ -6,6 +6,22 @@ This is the complete project repository for **Lumare**, a vertically integrated 
 
 ---
 
+## 🚀 Run it now
+
+See [**RUN.md**](RUN.md) for the 5-minute quickstart. TL;DR:
+
+```cmd
+git clone https://github.com/BlakeFrontier42/lumare-project.git
+cd lumare-project
+pip install -r backend/requirements.txt
+cd frontend && npm install && cd ..
+start-lumare.bat
+```
+
+Open http://localhost:3000/bot → pick an asset class → hit **Start**. Within 15s you'll see signals, positions, and trades streaming live from the backend.
+
+---
+
 ## Quick Links
 
 | Document | Path | Description |

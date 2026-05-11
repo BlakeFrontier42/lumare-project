@@ -156,6 +156,40 @@ class _ApiRunner(LiveRunner):
             logger.warning(f"No 5M data for {symbol}, skipping")
             return
 
+        # Step 0: feed the latest bar into the executor so any open
+        # orders from the previous cycle can fill, and existing
+        # positions get their unrealized P&L updated. Without this the
+        # executor is just a passive order queue and positions never
+        # materialise.
+        last_bar = candles_5m.iloc[-1]
+        bar_dict = {
+            "open": float(last_bar["open"]),
+            "high": float(last_bar["high"]),
+            "low": float(last_bar["low"]),
+            "close": float(last_bar["close"]),
+            "volume": float(last_bar.get("volume", 0) or 0),
+            "timestamp": last_bar.get("timestamp"),
+        }
+        try:
+            if hasattr(self.executor, "update_market_state"):
+                # ATR estimate (used by slippage model)
+                if len(candles_5m) >= 14:
+                    highs = candles_5m["high"].astype(float).values[-14:]
+                    lows = candles_5m["low"].astype(float).values[-14:]
+                    atr_est = float((highs - lows).mean())
+                else:
+                    atr_est = float(bar_dict["close"]) * 0.01
+                self.executor.update_market_state(
+                    symbol,
+                    price=bar_dict["close"],
+                    adv=max(bar_dict["volume"] * 100, 1_000_000),
+                    atr=atr_est,
+                )
+            if hasattr(self.executor, "process_bar"):
+                self.executor.process_bar(symbol, bar_dict)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Executor pre-cycle bar update skipped: {exc}")
+
         market_data = {
             "symbol": symbol,
             "candles": snapshot.candles,
@@ -389,19 +423,34 @@ class _ApiRunner(LiveRunner):
                     f"{direction} {adjusted_size:.4f} {symbol} @ "
                     f"{proposal.entry_price:.2f} (score={total_score:.0f})",
                 )
+
+                # Immediately try to fill the order against the current
+                # bar so the operator sees the position appear in the UI
+                # within the same cycle.
+                try:
+                    if hasattr(self.executor, "process_bar"):
+                        self.executor.process_bar(symbol, bar_dict)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"Executor fill attempt skipped: {exc}")
                 try:
                     self.storage.store_trade({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "trade_id": order.order_id,
                         "symbol": symbol,
-                        "direction": direction,
-                        "entry_price": proposal.entry_price,
-                        "stop_price": proposal.stop_price,
-                        "size": adjusted_size,
-                        "leverage": proposal.leverage,
-                        "score": total_score,
+                        "side": direction,  # storage requires LONG/SHORT
+                        "entry_time": datetime.now(timezone.utc).isoformat(),
+                        "entry_price": float(proposal.entry_price),
+                        "quantity": float(adjusted_size),
+                        "leverage": float(proposal.leverage),
+                        "stop_loss": float(proposal.stop_price),
+                        "take_profit": float(
+                            getattr(proposal, "tp1_price", proposal.stop_price)
+                        ),
+                        "risk_pct": float(proposal.risk_pct),
+                        "signal_score": int(total_score),
                         "regime": self.state.current_regime,
                         "status": "OPEN",
-                        "order_id": order.order_id,
+                        "strategy": "composite",
+                        "timeframe": "5M",
                     })
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"Trade store skipped: {exc}")
@@ -555,6 +604,24 @@ class AutoBot:
         if self._runner and self._runner.state.running:
             self._log_activity("info", "Start ignored — bot already running")
             return
+
+        # PRODUCTION SAFETY: real-money trading requires an explicit env
+        # var so an accidental "live" payload never sends real orders.
+        # Hard-coerce mode to "paper" unless LUMARE_ALLOW_LIVE=1.
+        import os
+        if mode.lower() == "live" and os.getenv(
+            "LUMARE_ALLOW_LIVE", "0"
+        ) != "1":
+            logger.warning(
+                "Bot start requested mode=live but LUMARE_ALLOW_LIVE is "
+                "not set. Coercing to mode=paper for safety."
+            )
+            self._log_activity(
+                "warning",
+                "Live-mode requested without LUMARE_ALLOW_LIVE=1 — "
+                "running in PAPER mode for safety.",
+            )
+            mode = "paper"
 
         self._config = {
             "symbols": list(symbols),
@@ -744,6 +811,75 @@ class AutoBot:
         future syncing with external broker fills."""
         return None
 
+    def close_position(self, symbol: str) -> Dict[str, Any]:
+        """Force-close an open position at market price. Returns the
+        realized P&L and removes the position from the executor."""
+        runner = self._runner
+        if not runner or not hasattr(runner.executor, "positions"):
+            return {"closed": False, "reason": "bot not running"}
+        executor = runner.executor
+        sym = symbol.upper()
+        if sym not in executor.positions:
+            return {"closed": False, "reason": "no position for symbol"}
+
+        pos = executor.positions[sym]
+        # Use last known price (set by process_bar each cycle)
+        last_price = float(
+            getattr(executor, "_prices", {}).get(sym, pos.avg_entry_price)
+            or pos.avg_entry_price
+        )
+
+        # Determine PnL
+        from backend.execution.paper_simulator import OrderSide
+        if pos.side == OrderSide.BUY:
+            pnl = (last_price - pos.avg_entry_price) * pos.quantity * pos.leverage
+        else:
+            pnl = (pos.avg_entry_price - last_price) * pos.quantity * pos.leverage
+        margin = (pos.avg_entry_price * pos.quantity) / pos.leverage
+
+        # Return margin + PnL to cash, drop the position
+        executor.cash += margin + pnl
+        pos.realized_pnl += pnl
+        del executor.positions[sym]
+
+        # Persist a closed trade record matching storage.store_trade schema
+        try:
+            import uuid as _uuid
+            entry_iso = (
+                pos.opened_at.isoformat()
+                if hasattr(pos, "opened_at") and pos.opened_at
+                else datetime.now(timezone.utc).isoformat()
+            )
+            runner.storage.store_trade({
+                "trade_id": f"manual-close-{sym}-{_uuid.uuid4().hex[:8]}",
+                "symbol": sym,
+                # CHECK constraint requires LONG/SHORT, not BUY/SELL
+                "side": "LONG" if pos.side == OrderSide.BUY else "SHORT",
+                "entry_time": entry_iso,
+                "exit_time": datetime.now(timezone.utc).isoformat(),
+                "entry_price": float(pos.avg_entry_price),
+                "exit_price": float(last_price),
+                "quantity": float(pos.quantity),
+                "leverage": float(pos.leverage),
+                "pnl": float(pnl),
+                "regime": runner.state.current_regime,
+                "status": "CLOSED",
+                "strategy": "composite",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Closed-trade store skipped: {exc}")
+
+        self._log_activity(
+            "trade",
+            f"Manual close {sym} @ {last_price:.2f} | PnL ${pnl:+,.2f}",
+        )
+        return {
+            "closed": True,
+            "symbol": sym,
+            "exit_price": last_price,
+            "pnl": pnl,
+        }
+
     def get_open_positions(self) -> List[Dict[str, Any]]:
         """Return open positions from the paper executor in a frontend-
         friendly shape that matches the bot page's OpenPosition type."""
@@ -762,6 +898,12 @@ class AutoBot:
                 )
             if current_price <= 0:
                 current_price = float(pos.avg_entry_price)
+            entry_dt = getattr(pos, "opened_at", None)
+            entry_ms = (
+                int(entry_dt.timestamp() * 1000)
+                if entry_dt
+                else int(datetime.now(timezone.utc).timestamp() * 1000)
+            )
             out.append({
                 "id": f"pos-{sym}-{side_val}",
                 "symbol": sym,
@@ -772,10 +914,9 @@ class AutoBot:
                 "quantity": float(pos.quantity),
                 "stopLoss": float(getattr(pos, "stop_loss", 0) or 0),
                 "takeProfit": float(getattr(pos, "take_profit", 0) or 0),
-                "entryTime": int(
-                    getattr(pos, "entry_timestamp", 0)
-                    or datetime.now(timezone.utc).timestamp() * 1000
-                ),
+                "entryTime": entry_ms,
+                "leverage": float(getattr(pos, "leverage", 1.0)),
+                "unrealizedPnl": float(getattr(pos, "unrealized_pnl", 0)),
             })
         return out
 
@@ -814,15 +955,15 @@ class AutoBot:
             except Exception:  # noqa: BLE001
                 exit_ms = entry_ms
             out.append({
-                "id": str(r.get("id") or r.get("order_id") or entry_ts),
+                "id": str(r.get("trade_id") or r.get("id") or entry_ts),
                 "symbol": r.get("symbol", ""),
-                "direction": r.get("direction", "LONG"),
+                "direction": r.get("side") or r.get("direction") or "LONG",
                 "strategy": r.get("strategy") or "composite",
                 "entryPrice": float(r.get("entry_price", 0) or 0),
                 "exitPrice": float(r.get("exit_price", 0) or 0),
-                "quantity": float(r.get("size", 0) or 0),
-                "stopLoss": float(r.get("stop_price", 0) or 0),
-                "takeProfit": float(r.get("tp_price", 0) or 0),
+                "quantity": float(r.get("quantity", 0) or 0),
+                "stopLoss": float(r.get("stop_loss", 0) or 0),
+                "takeProfit": float(r.get("take_profit", 0) or 0),
                 "entryTime": entry_ms,
                 "exitTime": exit_ms,
                 "pnl": float(r.get("pnl", 0) or 0),
