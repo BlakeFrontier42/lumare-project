@@ -388,6 +388,15 @@ class CryptoFeed:
         if csv_df is not None:
             return csv_df.tail(limit).reset_index(drop=True)
 
+        # No API key configured → skip live and return mock immediately.
+        # Avoids burning ~14s per fetch on retry backoff against an
+        # unauthenticated Blowfin endpoint.
+        if not self.api_key:
+            logger.debug(
+                "No Blowfin API key — mock OHLCV for {} {}", symbol, timeframe,
+            )
+            return self._generate_mock_ohlcv(symbol, timeframe, limit)
+
         # Live API
         cache_key = f"ohlcv:{symbol}:{timeframe}:{limit}"
         try:

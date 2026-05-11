@@ -1936,11 +1936,15 @@ async def bot_start(request: Request):
         strategies = body.get("strategies", ["momentum", "mean_reversion", "trend_following", "breakout"])
         interval = int(body.get("interval", 60))
         max_concurrent = int(body.get("max_concurrent", 3))
+        min_score = body.get("min_score")
+        mode = body.get("mode", "paper")
         autobot.start(
             symbols=symbols,
             strategies=strategies,
             interval_seconds=interval,
             max_concurrent=max_concurrent,
+            min_score=int(min_score) if min_score is not None else None,
+            mode=str(mode),
         )
         return {"status": "ok", "message": "Bot started", **autobot.get_status()}
     except Exception as exc:
@@ -1974,6 +1978,18 @@ async def bot_signals(limit: int = 50):
 @app.get("/api/bot/activity", tags=["Bot"])
 async def bot_activity(limit: int = 100):
     return {"activity": autobot.get_activity_log(limit)}
+
+
+@app.get("/api/bot/positions", tags=["Bot"])
+async def bot_positions():
+    """Live open positions from the paper executor."""
+    return {"positions": autobot.get_open_positions()}
+
+
+@app.get("/api/bot/trades", tags=["Bot"])
+async def bot_trades(limit: int = 100):
+    """Closed trades from persistent storage."""
+    return {"trades": autobot.get_closed_trades(limit)}
 
 
 # ═══════════════════════════════════════════════════════════

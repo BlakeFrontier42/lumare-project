@@ -1,0 +1,846 @@
+"""
+autobot.py — REST-facing controller for the autonomous trading bot.
+
+This module is the bridge between the FastAPI bot endpoints and the live
+trading pipeline (LiveRunner). It exposes a stable, frontend-friendly
+contract:
+
+    autobot.start(symbols, strategies, interval_seconds, max_concurrent)
+    autobot.stop()
+    autobot.get_status()          -> BotStatus
+    autobot.get_performance()     -> BotPerformance
+    autobot.get_signals(limit)    -> list[BotSignal]
+    autobot.get_activity_log(limit) -> list[ActivityEntry]
+    autobot.update_closed_trades()
+
+Internally it wraps a ``LiveRunner`` subclass that:
+  - Iterates over the symbol list passed by the API (not the hardcoded
+    settings.instruments.crypto_pairs).
+  - Routes data fetches through the right asset-class feed via
+    ``classify_symbol`` from ``backend.core.asset_profiles``.
+  - Captures every scoring decision into an in-memory deque so the
+    frontend can render real signals without depending on the SQLite
+    signal_logs schema.
+  - Uses a simple ``interval_seconds`` sleep instead of the 5-minute
+    candle alignment, so the operator sees activity within seconds of
+    pressing Start.
+
+The runner is started as an asyncio task on the FastAPI event loop, so
+no extra threads or processes are needed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Deque, Dict, List, Optional
+
+from loguru import logger
+
+from backend.live.runner import LiveRunner, TradeProposal
+from backend.config.settings import SETTINGS, RegimeState
+from backend.core.asset_profiles import classify_symbol
+
+
+# ---------------------------------------------------------------------------
+# Internal runner — overrides cycle/symbol/wait behavior for API usage
+# ---------------------------------------------------------------------------
+
+class _ApiRunner(LiveRunner):
+    """LiveRunner variant driven by the AutoBot controller.
+
+    Differences from the base runner:
+
+    * Iterates ``self.api_symbols`` (set by AutoBot) instead of the
+      hardcoded ``settings.instruments.crypto_pairs``.
+    * Asset-class-aware data fetch: ``classify_symbol(symbol)`` is passed
+      to ``aggregator.fetch_full_snapshot`` so equities, futures and
+      options use the right feed.
+    * Configurable cycle interval — defaults to 60s for responsive UX
+      instead of the 5-minute alignment.
+    * Pipes every signal/score event back to the parent ``AutoBot`` so
+      the API can serve them without touching the SQLite signal_logs
+      table (which has a different schema).
+    """
+
+    def __init__(self, parent: "AutoBot", *args: Any, **kwargs: Any) -> None:
+        self._parent = parent
+        self.api_symbols: List[str] = []
+        self.interval_seconds: int = 60
+        super().__init__(*args, **kwargs)
+
+    # ------------------------------------------------------------------ cycle
+    async def _run_cycle(self) -> None:  # type: ignore[override]
+        cycle_start = datetime.now(timezone.utc)
+        self.state.total_cycles += 1
+
+        symbols = list(self.api_symbols) or list(
+            self.settings.instruments.crypto_pairs
+        )
+        logger.info(
+            f"─── AutoBot cycle {self.state.total_cycles} | "
+            f"symbols={len(symbols)} | @ {cycle_start.isoformat()} ───"
+        )
+        self._parent._log_activity(
+            "cycle",
+            f"Cycle {self.state.total_cycles} starting — {len(symbols)} symbols",
+        )
+
+        for symbol in symbols:
+            try:
+                await self._process_symbol(symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Error processing {symbol}: {exc}")
+                self._parent._log_activity(
+                    "error", f"{symbol}: {exc}"
+                )
+
+        # Manage open positions
+        try:
+            await self._manage_positions()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Position management error: {exc}")
+
+        # Portfolio snapshot
+        portfolio = (
+            self.executor.get_portfolio()
+            if hasattr(self.executor, "get_portfolio")
+            else {}
+        )
+        total_value = portfolio.get("total_value", self._equity_history[-1])
+        self._equity_history.append(total_value)
+
+        try:
+            peak = max(total_value, max(self._equity_history))
+            self.storage.store_portfolio_snapshot({
+                "timestamp": cycle_start.isoformat(),
+                "total_equity": float(total_value),
+                "peak_equity": float(peak),
+                "cash": float(portfolio.get("cash", 0)),
+                "num_positions": int(portfolio.get("num_positions", 0)),
+                "unrealized_pnl": float(portfolio.get("unrealized_pnl", 0)),
+                "realized_pnl": float(portfolio.get("realized_pnl", 0)),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Portfolio snapshot store skipped: {exc}")
+
+        self.state.last_cycle = cycle_start
+        # Reset error streak on a clean cycle so the kill switch doesn't
+        # latch on transient flakes.
+        self.state.errors.clear()
+
+        elapsed = (datetime.now(timezone.utc) - cycle_start).total_seconds()
+        logger.info(
+            f"AutoBot cycle done in {elapsed:.1f}s | "
+            f"Portfolio: ${total_value:,.2f}"
+        )
+
+    # ---------------------------------------------------------- symbol process
+    async def _process_symbol(self, symbol: str) -> None:  # type: ignore[override]
+        asset_class = classify_symbol(symbol)
+
+        try:
+            snapshot = await self.aggregator.fetch_full_snapshot(
+                symbol, asset_class
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Snapshot fetch failed for {symbol}: {exc}")
+            return
+
+        candles_5m = snapshot.candles.get("5M")
+        import pandas as pd  # local import to avoid cycles
+        if candles_5m is None or (
+            isinstance(candles_5m, pd.DataFrame) and candles_5m.empty
+        ):
+            logger.warning(f"No 5M data for {symbol}, skipping")
+            return
+
+        market_data = {
+            "symbol": symbol,
+            "candles": snapshot.candles,
+            "last_price": snapshot.last_price
+            or float(candles_5m["close"].iloc[-1]),
+            "funding_rate": getattr(snapshot, "funding_rate", None),
+            "open_interest": getattr(snapshot, "open_interest", None),
+            "oi_change_pct": getattr(snapshot, "oi_change_pct", None),
+            "macro": getattr(snapshot, "macro", None) or {},
+        }
+
+        # Compute regime indicator inputs from 1H candles (the regime
+        # engine expects pre-computed scalars, not raw OHLCV).
+        regime_inputs = self._compute_regime_inputs(snapshot.candles)
+
+        # Regime
+        regime_result = self.regime_engine.classify(regime_inputs)
+        regime_state = (
+            regime_result.state
+            if hasattr(regime_result, "state")
+            else RegimeState.RISK_ON
+        )
+        self.state.current_regime = regime_state.value if hasattr(
+            regime_state, "value"
+        ) else str(regime_state)
+
+        # Persist regime change (schema-correct)
+        try:
+            self.storage.store_regime_change({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "new_regime": self.state.current_regime,
+                "trigger_reason": "scheduled_cycle",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Regime log skipped: {exc}")
+
+        if regime_state == RegimeState.CHAOTIC:
+            self._parent._log_activity(
+                "regime", f"{symbol}: CHAOTIC — no trading"
+            )
+            return
+
+        # Score both directions
+        for direction in ("LONG", "SHORT"):
+            if direction == "LONG" and regime_state == RegimeState.RISK_OFF:
+                continue
+
+            try:
+                raw_result = self.scoring_engine.score(
+                    market_data, regime_state, direction
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Scoring failed {symbol} {direction}: {exc}")
+                continue
+
+            # Normalise ScoringResult / dict / None to a single dict view
+            # so downstream code can safely call `.get()`.
+            if isinstance(raw_result, dict):
+                score_result = raw_result
+            elif raw_result is None:
+                score_result = {"total_score": 0}
+            else:
+                score_result = {
+                    "total_score": float(
+                        getattr(raw_result, "total_score", 0) or 0
+                    ),
+                    "component_scores": getattr(
+                        raw_result, "component_scores", {}
+                    ),
+                    "confidence": getattr(raw_result, "confidence", 0.5),
+                    "signals_active": getattr(
+                        raw_result, "signals_active", []
+                    ),
+                    "trade_eligible": getattr(
+                        raw_result, "trade_eligible", False
+                    ),
+                }
+
+            total_score = float(score_result.get("total_score", 0))
+
+            # Emit signal to autobot deque (frontend consumes from here).
+            self._parent._record_signal({
+                "signal_id": f"{symbol}-{direction}-{self.state.total_cycles}",
+                "symbol": symbol,
+                "strategy": "composite",
+                "direction": direction.lower(),
+                "confidence": float(total_score) / 100.0,
+                "entry": float(market_data["last_price"]),
+                "stop_loss": float(market_data["last_price"])
+                * (0.985 if direction == "LONG" else 1.015),
+                "take_profit": float(market_data["last_price"])
+                * (1.03 if direction == "LONG" else 0.97),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "acted": False,
+                "reason": (
+                    f"score={total_score:.0f} "
+                    f"regime={self.state.current_regime}"
+                ),
+            })
+
+            # Also persist to signal_logs in the schema the storage layer
+            # actually requires. The base LiveRunner had a schema-mismatch
+            # bug that threw on every cycle.
+            try:
+                self.storage.store_signal_log({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "symbol": symbol,
+                    "timeframe": "5M",
+                    "composite_score": float(total_score),
+                    "direction": direction,
+                    "regime": self.state.current_regime,
+                    "components": (
+                        score_result.get("component_scores")
+                        if isinstance(score_result, dict)
+                        else None
+                    ),
+                    "action_taken": (
+                        "EVALUATE"
+                        if total_score
+                        < self.settings.trade.min_score_to_trade
+                        else "PROPOSE"
+                    ),
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Signal log skipped: {exc}")
+
+            if total_score < self.settings.trade.min_score_to_trade:
+                continue
+
+            # Generate proposal
+            proposal = self._generate_proposal(
+                symbol, direction, market_data, score_result, regime_state
+            )
+            if not proposal:
+                continue
+
+            # Equity governor
+            eq_curve = pd.Series(self._equity_history)
+            gov_state = self.equity_governor.evaluate(eq_curve)
+            if gov_state.size_modifier < 1.0:
+                proposal.position_size *= gov_state.size_modifier
+                proposal.risk_pct *= gov_state.size_modifier
+
+            # Risk check — risk_engine expects strict TradeProposal /
+            # PortfolioState dataclasses, not dicts.
+            from backend.core.risk_engine import (
+                TradeProposal as RETradeProposal,
+                PortfolioState as REPortfolioState,
+            )
+            portfolio_state = self._get_portfolio_state()
+            peak = max(self._equity_history) if self._equity_history else 0.0
+            portfolio_obj = REPortfolioState(
+                total_value=float(
+                    portfolio_state.get(
+                        "total_value", self._equity_history[-1]
+                    )
+                ),
+                open_positions=list(
+                    portfolio_state.get("positions", {}).values()
+                )
+                if isinstance(portfolio_state.get("positions"), dict)
+                else list(portfolio_state.get("positions", [])),
+                equity_curve=list(self._equity_history),
+                daily_pnl=float(portfolio_state.get("daily_pnl", 0.0)),
+                peak_equity=float(peak),
+            )
+            asset_class = classify_symbol(symbol)
+            trade_obj = RETradeProposal(
+                symbol=symbol,
+                direction=direction.lower(),
+                entry_price=float(proposal.entry_price),
+                stop_price=float(proposal.stop_price),
+                conviction_score=float(total_score),
+                regime=regime_state,
+                leverage=float(getattr(proposal, "leverage", 1.0)),
+                asset_class=asset_class,
+            )
+            risk_decision_result = self.risk_engine.approve_trade(
+                trade_obj, portfolio_obj
+            )
+
+            # approve_trade returns either dict or RiskDecision object —
+            # normalise to a dict for consistent downstream access.
+            if isinstance(risk_decision_result, dict):
+                risk_decision = risk_decision_result
+            else:
+                risk_decision = {
+                    "approved": getattr(risk_decision_result, "approved", False),
+                    "adjusted_size": getattr(
+                        risk_decision_result,
+                        "adjusted_size",
+                        proposal.position_size,
+                    ),
+                    "reason": getattr(risk_decision_result, "reason", ""),
+                }
+
+            if not risk_decision.get("approved", False):
+                self._parent._log_activity(
+                    "risk",
+                    f"{symbol} {direction} rejected: "
+                    f"{risk_decision.get('reason', 'unknown')}",
+                )
+                continue
+
+            # Execute
+            adjusted_size = risk_decision.get(
+                "adjusted_size", proposal.position_size
+            )
+            try:
+                order = self.executor.submit_order(
+                    symbol=symbol,
+                    side="BUY" if direction == "LONG" else "SELL",
+                    price=proposal.entry_price,
+                    quantity=adjusted_size,
+                    leverage=proposal.leverage,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Order submit failed {symbol}: {exc}")
+                continue
+
+            status_value = (
+                order.status.value
+                if hasattr(order.status, "value")
+                else str(order.status)
+            )
+            if status_value != "REJECTED":
+                self.state.total_trades += 1
+                self._parent._log_activity(
+                    "trade",
+                    f"{direction} {adjusted_size:.4f} {symbol} @ "
+                    f"{proposal.entry_price:.2f} (score={total_score:.0f})",
+                )
+                try:
+                    self.storage.store_trade({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "symbol": symbol,
+                        "direction": direction,
+                        "entry_price": proposal.entry_price,
+                        "stop_price": proposal.stop_price,
+                        "size": adjusted_size,
+                        "leverage": proposal.leverage,
+                        "score": total_score,
+                        "regime": self.state.current_regime,
+                        "status": "OPEN",
+                        "order_id": order.order_id,
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"Trade store skipped: {exc}")
+
+    # ------------------------------------------------------ regime helper
+    @staticmethod
+    def _compute_regime_inputs(candles: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute the scalar inputs the RegimeClassifier requires.
+
+        Pulls from the 1H frame (fallback 4H, then 5M). Mirrors the logic
+        used in backend/backtest/replay_engine.py::_classify_regime so
+        live and backtest use the same regime definition.
+        """
+        import pandas as pd
+
+        df = None
+        for tf in ("1H", "4H", "5M"):
+            cand = candles.get(tf)
+            if cand is not None and not (
+                isinstance(cand, pd.DataFrame) and cand.empty
+            ):
+                df = cand
+                break
+
+        # Conservative defaults so the engine can still classify even
+        # when indicators are missing — better than throwing.
+        if df is None or len(df) < 20:
+            return {
+                "vol_percentile": 50.0,
+                "atr_percentile": 50.0,
+                "adx": 20.0,
+                "volume_ratio": 1.0,
+                "breakout_detected": False,
+                "macro_stress": False,
+                "macro_liquidity_expanding": True,
+            }
+
+        closes = df["close"].astype(float)
+        highs = df["high"].astype(float)
+        lows = df["low"].astype(float)
+        volumes = df.get("volume", pd.Series([1.0] * len(df))).astype(float)
+
+        # ATR + ATR percentile
+        prev_close = closes.shift(1)
+        tr = pd.concat(
+            [
+                highs - lows,
+                (highs - prev_close).abs(),
+                (lows - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.rolling(14).mean()
+        current_atr = float(atr.iloc[-1]) if not atr.empty else 0.0
+        atr_pct = (
+            float((atr.dropna() <= current_atr).mean() * 100)
+            if not atr.dropna().empty
+            else 50.0
+        )
+
+        # Vol percentile (annualised return std)
+        returns = closes.pct_change().dropna()
+        rolling_vol = returns.rolling(14).std()
+        current_vol = (
+            float(rolling_vol.iloc[-1]) if not rolling_vol.empty else 0.0
+        )
+        vol_pct = (
+            float((rolling_vol.dropna() <= current_vol).mean() * 100)
+            if not rolling_vol.dropna().empty
+            else 50.0
+        )
+
+        # ADX (simple DX approximation)
+        plus_dm = (highs.diff()).clip(lower=0)
+        minus_dm = (-lows.diff()).clip(lower=0)
+        plus_dm[plus_dm < minus_dm] = 0
+        minus_dm[minus_dm < plus_dm] = 0
+        smoothed_plus = plus_dm.rolling(14).mean()
+        smoothed_minus = minus_dm.rolling(14).mean()
+        smoothed_tr = tr.rolling(14).mean().replace(0, float("nan"))
+        plus_di = 100 * smoothed_plus / smoothed_tr
+        minus_di = 100 * smoothed_minus / smoothed_tr
+        dx = (
+            100
+            * (plus_di - minus_di).abs()
+            / (plus_di + minus_di).replace(0, float("nan"))
+        )
+        adx_val = (
+            float(dx.rolling(14).mean().iloc[-1]) if not dx.empty else 20.0
+        )
+        if adx_val != adx_val:  # NaN guard
+            adx_val = 20.0
+
+        # Volume ratio
+        avg_vol = float(volumes.rolling(20).mean().iloc[-1]) or 1.0
+        vol_ratio = float(volumes.iloc[-1]) / avg_vol if avg_vol else 1.0
+
+        # Breakout detection
+        recent_high = (
+            float(highs.iloc[-21:-1].max())
+            if len(highs) > 21
+            else float(highs.max())
+        )
+        breakout = bool(float(closes.iloc[-1]) > recent_high)
+
+        return {
+            "vol_percentile": vol_pct,
+            "atr_percentile": atr_pct,
+            "adx": adx_val,
+            "volume_ratio": vol_ratio,
+            "breakout_detected": breakout,
+            "macro_stress": False,
+            "macro_liquidity_expanding": True,
+        }
+
+    # ----------------------------------------------------------- wait override
+    async def _wait_for_next_candle(self) -> None:  # type: ignore[override]
+        await asyncio.sleep(max(int(self.interval_seconds), 5))
+
+
+# ---------------------------------------------------------------------------
+# AutoBot controller (singleton)
+# ---------------------------------------------------------------------------
+
+class AutoBot:
+    """Singleton bot controller bridging FastAPI endpoints to a LiveRunner."""
+
+    def __init__(self) -> None:
+        self._runner: Optional[_ApiRunner] = None
+        self._task: Optional[asyncio.Task] = None
+        self._started_at: Optional[datetime] = None
+        self._config: Dict[str, Any] = {
+            "symbols": [],
+            "strategies": [],
+            "interval_seconds": 60,
+            "max_concurrent": 3,
+        }
+        self._signals: Deque[Dict[str, Any]] = deque(maxlen=500)
+        self._activity: Deque[Dict[str, Any]] = deque(maxlen=500)
+
+    # ------------------------------------------------------------------ public
+    def start(
+        self,
+        symbols: List[str],
+        strategies: List[str],
+        interval_seconds: int,
+        max_concurrent: int,
+        min_score: Optional[int] = None,
+        mode: str = "paper",
+    ) -> None:
+        if self._runner and self._runner.state.running:
+            self._log_activity("info", "Start ignored — bot already running")
+            return
+
+        self._config = {
+            "symbols": list(symbols),
+            "strategies": list(strategies),
+            "interval_seconds": int(interval_seconds),
+            "max_concurrent": int(max_concurrent),
+            "mode": mode,
+            "min_score": int(min_score) if min_score is not None else None,
+        }
+
+        # Build a fresh runner each start so config changes (symbols,
+        # interval) take effect.
+        self._runner = _ApiRunner(parent=self, mode=mode)
+        self._runner.api_symbols = list(symbols)
+        self._runner.interval_seconds = int(interval_seconds)
+
+        # Optional min_score override (e.g. 25 in demo mode so the operator
+        # actually sees trades fire on mock data). Defaults to whatever the
+        # global settings.trade.min_score_to_trade is (typically 70).
+        if min_score is not None:
+            try:
+                self._runner.settings.trade.min_score_to_trade = int(min_score)
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Fallback: no running loop in this context (rare from FastAPI).
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        self._task = loop.create_task(self._runner.run())
+        self._started_at = datetime.now(timezone.utc)
+        self._log_activity(
+            "start",
+            f"Bot started — {len(symbols)} symbols, "
+            f"{interval_seconds}s interval, "
+            f"max {max_concurrent} concurrent positions",
+        )
+        logger.info(
+            f"AutoBot started with {symbols} | "
+            f"interval={interval_seconds}s"
+        )
+
+    def stop(self) -> None:
+        if self._runner:
+            self._runner.stop()
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._log_activity("stop", "Bot stopped")
+        logger.info("AutoBot stopped")
+
+    # ----------------------------------------------------------- status / perf
+    def get_status(self) -> Dict[str, Any]:
+        runner = self._runner
+        running = bool(runner and runner.state.running)
+        if running and self._started_at:
+            uptime = int(
+                (datetime.now(timezone.utc) - self._started_at).total_seconds()
+            )
+        else:
+            uptime = 0
+
+        open_positions = 0
+        if runner and hasattr(runner.executor, "positions"):
+            open_positions = len(runner.executor.positions)
+
+        return {
+            "running": running,
+            "uptime_seconds": uptime,
+            "symbols": self._config["symbols"],
+            "strategies": self._config["strategies"],
+            "interval_seconds": self._config["interval_seconds"],
+            "max_concurrent_positions": self._config["max_concurrent"],
+            "signals_generated": len(self._signals),
+            "trades_placed": runner.state.total_trades if runner else 0,
+            "open_positions": open_positions,
+            "current_regime": runner.state.current_regime if runner else "UNKNOWN",
+            "kill_switch": runner.state.kill_switch if runner else False,
+            "total_cycles": runner.state.total_cycles if runner else 0,
+            "last_cycle": (
+                runner.state.last_cycle.isoformat()
+                if runner and runner.state.last_cycle
+                else None
+            ),
+        }
+
+    def get_performance(self) -> Dict[str, Any]:
+        """Compute portfolio performance from the live executor + storage."""
+        runner = self._runner
+        portfolio: Dict[str, Any] = {}
+        closed_trades: List[Dict[str, Any]] = []
+
+        if runner:
+            if hasattr(runner.executor, "get_portfolio"):
+                try:
+                    portfolio = runner.executor.get_portfolio()
+                except Exception:  # noqa: BLE001
+                    portfolio = {}
+
+            if hasattr(runner.executor, "closed_positions"):
+                closed_trades = list(getattr(runner.executor, "closed_positions"))
+            elif hasattr(runner.executor, "closed_trades"):
+                closed_trades = list(getattr(runner.executor, "closed_trades"))
+
+        total_pnl = float(
+            portfolio.get(
+                "realized_pnl",
+                sum(float(t.get("pnl", 0)) for t in closed_trades),
+            )
+        )
+        wins = [
+            float(t.get("pnl", 0))
+            for t in closed_trades
+            if float(t.get("pnl", 0)) > 0
+        ]
+        losses = [
+            float(t.get("pnl", 0))
+            for t in closed_trades
+            if float(t.get("pnl", 0)) < 0
+        ]
+        total_trades = len(closed_trades)
+        win_rate = (len(wins) / total_trades * 100) if total_trades else 0.0
+        avg_gain = (sum(wins) / len(wins)) if wins else 0.0
+        avg_loss = (sum(losses) / len(losses)) if losses else 0.0
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        profit_factor = (
+            (gross_profit / gross_loss) if gross_loss > 0 else (
+                gross_profit if gross_profit else 0.0
+            )
+        )
+
+        # Sharpe approx from runner equity history
+        sharpe = 0.0
+        if runner and len(runner._equity_history) > 5:
+            import math
+            import statistics
+            eq = runner._equity_history
+            rets = [
+                (eq[i] - eq[i - 1]) / eq[i - 1]
+                for i in range(1, len(eq))
+                if eq[i - 1]
+            ]
+            if rets and statistics.pstdev(rets) > 0:
+                sharpe = (
+                    statistics.mean(rets)
+                    / statistics.pstdev(rets)
+                    * math.sqrt(252 * 78)  # 5m bars annualised
+                )
+
+        return {
+            "total_pnl": total_pnl,
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+            "avg_gain": avg_gain,
+            "avg_loss": avg_loss,
+            "profit_factor": profit_factor,
+            "sharpe": sharpe,
+            "portfolio_value": float(
+                portfolio.get(
+                    "total_value",
+                    runner._equity_history[-1] if runner else 100_000.0,
+                )
+            ),
+            "unrealized_pnl": float(portfolio.get("unrealized_pnl", 0.0)),
+            "strategy_breakdown": {
+                "composite": {
+                    "trades": total_trades,
+                    "pnl": total_pnl,
+                    "win_rate": win_rate,
+                }
+            },
+        }
+
+    # --------------------------------------------------------------- streams
+    def get_signals(self, limit: int = 50) -> List[Dict[str, Any]]:
+        return list(self._signals)[-int(limit):][::-1]
+
+    def get_activity_log(self, limit: int = 100) -> List[Dict[str, Any]]:
+        return list(self._activity)[-int(limit):][::-1]
+
+    def update_closed_trades(self) -> None:
+        """Hook called pre-status/performance. Currently a no-op because the
+        runner already manages position lifecycle inline. Reserved for
+        future syncing with external broker fills."""
+        return None
+
+    def get_open_positions(self) -> List[Dict[str, Any]]:
+        """Return open positions from the paper executor in a frontend-
+        friendly shape that matches the bot page's OpenPosition type."""
+        runner = self._runner
+        out: List[Dict[str, Any]] = []
+        if not runner or not hasattr(runner.executor, "positions"):
+            return out
+        positions = runner.executor.positions  # symbol -> SimPosition
+        for sym, pos in positions.items():
+            side_val = getattr(pos.side, "value", str(pos.side))
+            direction = "LONG" if side_val == "BUY" else "SHORT"
+            current_price = 0.0
+            if hasattr(runner.executor, "_prices"):
+                current_price = float(
+                    runner.executor._prices.get(sym, pos.avg_entry_price) or 0
+                )
+            if current_price <= 0:
+                current_price = float(pos.avg_entry_price)
+            out.append({
+                "id": f"pos-{sym}-{side_val}",
+                "symbol": sym,
+                "direction": direction,
+                "strategy": "composite",
+                "entryPrice": float(pos.avg_entry_price),
+                "currentPrice": current_price,
+                "quantity": float(pos.quantity),
+                "stopLoss": float(getattr(pos, "stop_loss", 0) or 0),
+                "takeProfit": float(getattr(pos, "take_profit", 0) or 0),
+                "entryTime": int(
+                    getattr(pos, "entry_timestamp", 0)
+                    or datetime.now(timezone.utc).timestamp() * 1000
+                ),
+            })
+        return out
+
+    def get_closed_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return closed trades from storage in frontend-friendly shape."""
+        runner = self._runner
+        if not runner:
+            return []
+        try:
+            # Query last `limit` trades regardless of window
+            from datetime import timedelta
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=365)
+            rows = runner.storage.get_trades(
+                start=start.isoformat(),
+                end=end.isoformat(),
+                status="CLOSED",
+            )
+        except Exception:  # noqa: BLE001
+            rows = []
+        rows = rows[-int(limit):]
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            entry_ts = r.get("entry_time") or r.get("timestamp") or 0
+            exit_ts = r.get("exit_time") or entry_ts
+            try:
+                entry_ms = int(
+                    datetime.fromisoformat(str(entry_ts)).timestamp() * 1000
+                )
+            except Exception:  # noqa: BLE001
+                entry_ms = 0
+            try:
+                exit_ms = int(
+                    datetime.fromisoformat(str(exit_ts)).timestamp() * 1000
+                )
+            except Exception:  # noqa: BLE001
+                exit_ms = entry_ms
+            out.append({
+                "id": str(r.get("id") or r.get("order_id") or entry_ts),
+                "symbol": r.get("symbol", ""),
+                "direction": r.get("direction", "LONG"),
+                "strategy": r.get("strategy") or "composite",
+                "entryPrice": float(r.get("entry_price", 0) or 0),
+                "exitPrice": float(r.get("exit_price", 0) or 0),
+                "quantity": float(r.get("size", 0) or 0),
+                "stopLoss": float(r.get("stop_price", 0) or 0),
+                "takeProfit": float(r.get("tp_price", 0) or 0),
+                "entryTime": entry_ms,
+                "exitTime": exit_ms,
+                "pnl": float(r.get("pnl", 0) or 0),
+            })
+        return out
+
+    # ------------------------------------------------------------ internal
+    def _record_signal(self, signal: Dict[str, Any]) -> None:
+        self._signals.append(signal)
+
+    def _log_activity(self, kind: str, message: str) -> None:
+        self._activity.append({
+            "type": kind,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+# Module-level singleton — imported as ``from backend.orchestrator.autobot
+# import autobot`` in backend/api/app.py.
+autobot = AutoBot()

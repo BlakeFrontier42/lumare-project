@@ -186,10 +186,31 @@ class RiskEngine:
     # ------------------------------------------------------------------
 
     def _cfg(self, key: str) -> Any:
+        """Read a config key. Supports both dict-style settings and the
+        pydantic Settings object used throughout the live pipeline.
+
+        For pydantic Settings we walk nested groups (risk, trade,
+        leverage, regime) looking for the key.
+        """
         if self._settings is not None:
-            val = self._settings.get(key)
-            if val is not None:
-                return val
+            # Plain dict / Mapping path
+            if hasattr(self._settings, "get") and callable(
+                self._settings.get
+            ):
+                try:
+                    val = self._settings.get(key)
+                    if val is not None:
+                        return val
+                except (TypeError, AttributeError):
+                    pass
+            # Direct attribute on the Settings root
+            if hasattr(self._settings, key):
+                return getattr(self._settings, key)
+            # Walk known nested groups
+            for group in ("risk", "trade", "leverage", "regime"):
+                sub = getattr(self._settings, group, None)
+                if sub is not None and hasattr(sub, key):
+                    return getattr(sub, key)
         return DEFAULT_SETTINGS.get(key)
 
     # ==================================================================

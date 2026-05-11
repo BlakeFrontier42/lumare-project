@@ -212,13 +212,16 @@ class LiveRunner:
 
         regime_state = regime_result.state if hasattr(regime_result, 'state') else RegimeState.RISK_ON
 
-        # Log regime
-        self.storage.store_regime_change({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "regime": regime_state.value,
-            "confidence": getattr(regime_result, 'confidence', 0.5),
-            "factors": str(getattr(regime_result, 'contributing_factors', {})),
-        })
+        # Log regime — storage requires {timestamp, symbol, new_regime}
+        try:
+            self.storage.store_regime_change({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "new_regime": regime_state.value,
+                "trigger_reason": "scheduled_cycle",
+            })
+        except Exception as exc:
+            logger.debug(f"Regime log skipped: {exc}")
 
         # 3. CHAOTIC = no trading
         if regime_state == RegimeState.CHAOTIC:
@@ -233,16 +236,25 @@ class LiveRunner:
 
             score_result = self.scoring_engine.score(market_data, regime_state, direction)
 
-            # Log signal
-            self.storage.store_signal_log({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "symbol": symbol,
-                "direction": direction,
-                "score": score_result.get("total_score", 0),
-                "components": str(score_result.get("component_scores", {})),
-                "regime": regime_state.value,
-                "trade_eligible": score_result.get("trade_eligible", False),
-            })
+            # Log signal — storage requires {timestamp, symbol, timeframe, composite_score}
+            try:
+                self.storage.store_signal_log({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "symbol": symbol,
+                    "timeframe": "5M",
+                    "composite_score": float(score_result.get("total_score", 0)),
+                    "direction": direction,
+                    "regime": regime_state.value,
+                    "components": score_result.get("component_scores", {}),
+                    "action_taken": (
+                        "PROPOSE"
+                        if score_result.get("total_score", 0)
+                        >= self.settings.trade.min_score_to_trade
+                        else "EVALUATE"
+                    ),
+                })
+            except Exception as exc:
+                logger.debug(f"Signal log skipped: {exc}")
 
             total_score = score_result.get("total_score", 0)
             if total_score < self.settings.trade.min_score_to_trade:
