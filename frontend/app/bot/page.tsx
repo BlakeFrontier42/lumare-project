@@ -51,6 +51,10 @@ interface BotStatus {
   uptime_seconds: number;
   symbols: string[];
   strategies: string[];
+  // Data provenance per symbol — "coinbase" / "yfinance" / "polygon" / "blowfin" / "mock"
+  data_sources?: Record<string, string>;
+  any_mock_data?: boolean;
+  mode?: string;
   interval_seconds: number;
   max_concurrent_positions: number;
   signals_generated: number;
@@ -834,6 +838,30 @@ export default function BotPage() {
           <span className={`w-1.5 h-1.5 rounded-full ${demoMode ? "bg-amber-400" : "bg-emerald-400 animate-pulse"}`} />
           {demoMode ? "Demo" : "Live"}
         </button>
+
+        {/* Data-provenance badge — proves where every price actually comes from */}
+        {status?.data_sources && Object.keys(status.data_sources).length > 0 && (
+          <div
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-2 ${
+              status.any_mock_data
+                ? "bg-red-500/20 text-red-300 border-red-500/40"
+                : "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+            }`}
+            title={Object.entries(status.data_sources)
+              .map(([s, src]) => `${s}: ${src}`)
+              .join("\n")}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                status.any_mock_data ? "bg-red-400" : "bg-emerald-400 animate-pulse"
+              }`}
+            />
+            {status.any_mock_data ? "MOCK DATA" : "LIVE DATA"}
+            <span className="text-[10px] opacity-70 font-mono">
+              {Array.from(new Set(Object.values(status.data_sources))).join(" · ")}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}

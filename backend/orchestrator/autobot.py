@@ -690,6 +690,24 @@ class AutoBot:
         if runner and hasattr(runner.executor, "positions"):
             open_positions = len(runner.executor.positions)
 
+        # Pull per-symbol data provenance from the feeds (set on each
+        # fetch). Lets the frontend show a LIVE / MOCK badge so the
+        # operator never confuses simulated prices with real markets.
+        data_sources: Dict[str, str] = {}
+        any_mock = False
+        if runner and runner.aggregator:
+            cf = getattr(runner.aggregator, "crypto_feed", None)
+            ef = getattr(runner.aggregator, "equities_feed", None)
+            for sym in self._config["symbols"]:
+                src = "unknown"
+                if cf and sym in cf.last_data_source:
+                    src = cf.last_data_source[sym]
+                elif ef and sym in ef.last_data_source:
+                    src = ef.last_data_source[sym]
+                data_sources[sym] = src
+                if src == "mock":
+                    any_mock = True
+
         return {
             "running": running,
             "uptime_seconds": uptime,
@@ -708,6 +726,9 @@ class AutoBot:
                 if runner and runner.state.last_cycle
                 else None
             ),
+            "mode": self._config.get("mode", "paper"),
+            "data_sources": data_sources,
+            "any_mock_data": any_mock,
         }
 
     def get_performance(self) -> Dict[str, Any]:

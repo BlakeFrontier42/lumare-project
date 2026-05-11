@@ -155,6 +155,10 @@ class CryptoFeed:
         self._limiter = RateLimiter(max_calls=10, period=1.0)
         self._client: httpx.AsyncClient | None = None
 
+        # Per-symbol provenance: "blowfin" / "coinbase" / "csv" / "mock"
+        # Surfaced via get_data_source() so the UI can label live vs sim.
+        self.last_data_source: dict[str, str] = {}
+
         if not self.api_key and not self.use_mock:
             logger.warning("No Blowfin API key configured -- mock data will be used for authenticated endpoints")
 
@@ -247,6 +251,116 @@ class CryptoFeed:
 
         logger.error("All {} retries exhausted for {} {}", self.max_retries, method, path)
         raise last_exc  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
+    # Coinbase Exchange public OHLCV (keyless fallback)
+    # ------------------------------------------------------------------
+
+    # Coinbase only supports specific granularities (seconds). Anything
+    # else has to be resampled.
+    _COINBASE_GRANULARITY = {
+        "1M": 60,
+        "5M": 300,
+        "15M": 900,
+        "1H": 3600,
+        "4H": None,        # resample from 1H
+        "1D": 86400,
+    }
+
+    @staticmethod
+    def _to_coinbase_pair(symbol: str) -> str:
+        """Convert bot-style symbol to a Coinbase product id (BASE-USD).
+
+        Handles:
+          - "BTCUSDT" / "BTCUSDC" / "BTCUSD"  → "BTC-USD"
+          - "BTC-USDT-PERP" / "BTC_PERP"      → "BTC-USD"
+          - "BTC-USD" / "BTC-USDT"            → "BTC-USD"
+          - "BTC" (bare base)                  → "BTC-USD"
+
+        Coinbase quotes spot in USD (not USDT), so all stablecoin quotes
+        collapse to the USD product.
+        """
+        s = symbol.upper().replace("-PERP", "").replace("_PERP", "")
+        # Strip explicit BASE-QUOTE form
+        if "-" in s or "/" in s:
+            parts = s.replace("/", "-").split("-")
+            base = parts[0]
+            return f"{base}-USD"
+        # Strip suffixed stablecoin
+        for suf in ("USDT", "USDC", "BUSD", "DAI", "USD"):
+            if s.endswith(suf) and len(s) > len(suf):
+                return f"{s[: -len(suf)]}-USD"
+        # Bare base (e.g. "BTC")
+        return f"{s}-USD"
+
+    async def _fetch_coinbase_ohlcv(
+        self, symbol: str, timeframe: str, limit: int
+    ) -> Optional[pd.DataFrame]:
+        """Pull OHLCV bars from Coinbase Exchange public API.
+
+        Returns ``None`` if the symbol isn't tradeable on Coinbase or the
+        request fails. No authentication required.
+        """
+        product = self._to_coinbase_pair(symbol)
+        gran = self._COINBASE_GRANULARITY.get(timeframe.upper())
+
+        # 4H is not a native Coinbase granularity → pull 1H and resample.
+        if gran is None and timeframe.upper() == "4H":
+            df_1h = await self._fetch_coinbase_ohlcv(symbol, "1H", limit * 4)
+            if df_1h is None or df_1h.empty:
+                return None
+            df_1h = df_1h.set_index("timestamp")
+            ohlc = df_1h.resample("4h").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }).dropna().tail(limit).reset_index()
+            return ohlc
+        if gran is None:
+            return None
+
+        cache_key = f"cb:ohlcv:{product}:{gran}:{limit}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Coinbase caps each request at 300 candles
+        url = (
+            "https://api.exchange.coinbase.com/products/"
+            f"{product}/candles?granularity={gran}&limit={min(limit, 300)}"
+        )
+        try:
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(8.0, connect=4.0),
+                headers={"User-Agent": "lumare/1.0"},
+            )
+            async with client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                rows = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Coinbase fetch failed for {} {}: {}", product, timeframe, exc,
+            )
+            return None
+
+        if not rows or not isinstance(rows, list):
+            return None
+
+        # Coinbase rows: [time, low, high, open, close, volume] (newest first)
+        df = pd.DataFrame(
+            rows, columns=["time", "low", "high", "open", "close", "volume"]
+        )
+        df["timestamp"] = pd.to_datetime(df["time"].astype(float), unit="s", utc=True)
+        df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+        for col in ("open", "high", "low", "close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.sort_values("timestamp").reset_index(drop=True).tail(limit)
+
+        self._cache.set(cache_key, df, ttl=TIMEFRAME_MS[timeframe.upper()] // 2000)
+        return df
 
     # ------------------------------------------------------------------
     # Mock data generation
@@ -381,20 +495,36 @@ class CryptoFeed:
         # Mock path
         if self.use_mock:
             logger.debug("Returning mock OHLCV for {} {}", symbol, timeframe)
+            self.last_data_source[symbol] = "mock"
             return self._generate_mock_ohlcv(symbol, timeframe, limit)
 
         # CSV fallback
         csv_df = self._load_csv(symbol, timeframe)
         if csv_df is not None:
+            self.last_data_source[symbol] = "csv"
             return csv_df.tail(limit).reset_index(drop=True)
 
-        # No API key configured → skip live and return mock immediately.
-        # Avoids burning ~14s per fetch on retry backoff against an
-        # unauthenticated Blowfin endpoint.
+        # No API key configured → try the keyless Coinbase Exchange
+        # public endpoint before falling back to mock. Coinbase serves
+        # real OHLCV without authentication and works in US.
         if not self.api_key:
-            logger.debug(
-                "No Blowfin API key — mock OHLCV for {} {}", symbol, timeframe,
+            try:
+                df = await self._fetch_coinbase_ohlcv(symbol, timeframe, limit)
+                if df is not None and not df.empty:
+                    self.last_data_source[symbol] = "coinbase"
+                    return df
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Coinbase fallback failed for {} {}: {}",
+                    symbol, timeframe, exc,
+                )
+            logger.warning(
+                "No real crypto data available for {} {} — using mock. "
+                "Bot will show simulated prices until BLOWFIN_API_KEY or "
+                "Coinbase connectivity is restored.",
+                symbol, timeframe,
             )
+            self.last_data_source[symbol] = "mock"
             return self._generate_mock_ohlcv(symbol, timeframe, limit)
 
         # Live API
@@ -414,6 +544,7 @@ class CryptoFeed:
             rows = data.get("data", [])
             if not rows:
                 logger.warning("Empty OHLCV response for {} {}; falling back to mock", symbol, timeframe)
+                self.last_data_source[symbol] = "mock"
                 return self._generate_mock_ohlcv(symbol, timeframe, limit)
 
             df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -421,10 +552,12 @@ class CryptoFeed:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             df["timestamp"] = pd.to_datetime(df["timestamp"].astype(float), unit="ms", utc=True)
             df = df.sort_values("timestamp").reset_index(drop=True)
+            self.last_data_source[symbol] = "blowfin"
             return df
 
         except Exception as exc:
             logger.error("Failed to fetch OHLCV for {} {}: {} -- falling back to mock", symbol, timeframe, exc)
+            self.last_data_source[symbol] = "mock"
             return self._generate_mock_ohlcv(symbol, timeframe, limit)
 
     async def get_funding_rate(self, symbol: str) -> dict:

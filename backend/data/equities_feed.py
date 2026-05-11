@@ -246,6 +246,9 @@ class EquitiesFeed:
         self._limiter = RateLimiter(max_calls=5, period=1.0)
         self._client: httpx.AsyncClient | None = None
 
+        # Per-symbol provenance: "polygon" / "yfinance" / "mock"
+        self.last_data_source: dict[str, str] = {}
+
         if not self.api_key and not self.use_mock:
             if _HAS_YFINANCE:
                 logger.info("No Polygon API key -- using Yahoo Finance for equity data")
@@ -494,6 +497,7 @@ class EquitiesFeed:
 
         # If forced mock mode, skip everything
         if self.use_mock:
+            self.last_data_source[symbol] = "mock"
             return self._generate_mock_ohlcv(symbol, timeframe, _start, _end)
 
         # Try Polygon first if key is available
@@ -515,6 +519,7 @@ class EquitiesFeed:
                     df = df.rename(columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
                     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
                     df = df[["timestamp", "open", "high", "low", "close", "volume"]].sort_values("timestamp").reset_index(drop=True)
+                    self.last_data_source[symbol] = "polygon"
                     return df
                 logger.warning("Empty Polygon OHLCV for {}; trying yfinance", symbol)
             except Exception as exc:
@@ -526,12 +531,14 @@ class EquitiesFeed:
                 df = await self._yfinance_ohlcv(symbol, timeframe, _start, _end)
                 if not df.empty:
                     logger.debug("yfinance OHLCV returned {} bars for {}", len(df), symbol)
+                    self.last_data_source[symbol] = "yfinance"
                     return df
             except Exception as exc:
                 logger.warning("yfinance OHLCV also failed for {}: {}", symbol, exc)
 
         # Last resort: mock
         logger.debug("Returning mock OHLCV for {}", symbol)
+        self.last_data_source[symbol] = "mock"
         return self._generate_mock_ohlcv(symbol, timeframe, _start, _end)
 
     async def get_ticker_details(self, symbol: str) -> dict:
