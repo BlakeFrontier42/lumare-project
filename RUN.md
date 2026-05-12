@@ -191,8 +191,37 @@ Global thresholds in `backend/config/settings.py` (`min_score_to_trade=70`).
 | GET | `/api/bot/positions` | — | `{positions: [...]}` live executor positions |
 | GET | `/api/bot/trades` | `?limit=100` | `{trades: [...]}` closed trades from storage |
 | POST | `/api/bot/positions/{symbol}/close` | — | `{closed, exit_price, pnl}` |
+| POST | `/api/bot/symbols/{symbol}/kill` | `?reason=...` | manually disable symbol |
+| POST | `/api/bot/symbols/{symbol}/reset` | — | re-enable a killed symbol |
+| GET | `/api/options/recommendations` | `?symbols=...&weeks=N` | top 2 ITM/OTM per expiry + overall best |
+| GET | `/api/health` | — | shallow uptime probe |
+| GET | `/api/health/deep` | — | engine + storage + Coinbase + bot status |
 
 OpenAPI docs at `http://localhost:8000/docs`.
+
+### Auto-protection: per-symbol kill switch
+
+When a symbol's rolling profit factor over its last 25 closed trades drops below **1.0** (after at least **10** trades), the bot automatically stops opening new positions on it. Existing positions keep their stops and take-profits. The symbol shows up in `/api/bot/status` under `symbol_kills` and as a red banner on the bot page with a one-click "re-enable" button.
+
+Auto-clears when rolling PF recovers above threshold. Operators can manually pin a kill (`POST /api/bot/symbols/{sym}/kill`) or force-clear (`POST /api/bot/symbols/{sym}/reset`).
+
+Threshold + window are tunable via `AutoBot._kill_pf_threshold`, `_kill_min_samples`, `_kill_window`.
+
+### Production deployment checklist
+
+Before flipping `LUMARE_ALLOW_LIVE=1`:
+
+- [ ] `.env` populated from `.env.example` — at minimum `LUMARE_CORS_ORIGINS` set to your hosted frontend
+- [ ] `SENTRY_DSN` configured (recommended)
+- [ ] `POLYGON_API_KEY` or `ALPACA_API_KEY` for real equity data
+- [ ] `COINBASE_API_KEY` + `_SECRET` for live crypto execution
+- [ ] Backend running behind a reverse proxy (Caddy / Nginx / Cloudflare) with TLS
+- [ ] Database backed by Postgres, not SQLite (see `data/migrate_to_postgres.md`)
+- [ ] At least 30 days of paper-trading proves PF > 1.2 across the asset classes you'll trade
+- [ ] Walk-forward validation (`scripts/walk_forward.py`) passes on 4+ non-overlapping windows
+- [ ] Kill switch threshold + min samples reviewed for your risk tolerance
+- [ ] Uptime monitor pointed at `/api/health/deep` with alerts on `status != "ok"`
+- [ ] Rate limits sized for your expected client load (see `_burst_limit` / `_expensive_limit` in app.py)
 
 ---
 
