@@ -18,7 +18,77 @@ import {
   Shield,
   DollarSign,
   Clock,
+  Star,
+  Sparkles,
+  Award,
 } from "lucide-react";
+
+/* ------------------------------------------------------------------ */
+/*  Recommender types                                                  */
+/* ------------------------------------------------------------------ */
+
+interface RecPick {
+  underlying: string;
+  contract_id: string;
+  occ_symbol: string;
+  option_type: "CALL" | "PUT";
+  strike: number;
+  expiry: string;
+  dte: number;
+  last: number;
+  bid: number;
+  ask: number;
+  mid: number;
+  spread_pct: number;
+  volume: number;
+  open_interest: number;
+  iv: number;
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  spot: number;
+  is_itm: boolean;
+  composite_score: number;
+  components: {
+    probability_of_profit: number;
+    liquidity: number;
+    spread: number;
+    greek_fit: number;
+    iv_value: number;
+  };
+  extras: {
+    breakeven: number;
+    max_loss_per_contract: number;
+    premium: number;
+    realised_vol: number;
+    is_itm: boolean;
+  };
+}
+
+interface RecExpiryBlock {
+  expiry: string;
+  dte: number;
+  top_itm_calls: RecPick[];
+  top_otm_calls: RecPick[];
+  top_itm_puts: RecPick[];
+  top_otm_puts: RecPick[];
+}
+
+interface RecSymbolBlock {
+  underlying: string;
+  spot: number;
+  realised_vol_annualised: number;
+  as_of: string;
+  by_expiry: RecExpiryBlock[];
+  overall_best: RecPick | null;
+}
+
+interface RecommendationResponse {
+  generated_at: string;
+  by_symbol: RecSymbolBlock[];
+  overall_best_trade: RecPick | null;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -306,6 +376,41 @@ export default function OptionsPage() {
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [expDropdownOpen, setExpDropdownOpen] = useState(false);
 
+  // Recommendations from the backend
+  const [recs, setRecs] = useState<RecommendationResponse | null>(null);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsError, setRecsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchRecs = async () => {
+      setRecsLoading(true);
+      setRecsError(null);
+      try {
+        const resp = await fetch(
+          "/api/options/recommendations?symbols=SPY,QQQ,AAPL,NVDA,TSLA,MSFT,META&weeks=3"
+        );
+        const data = await resp.json();
+        if (!cancelled) setRecs(data);
+      } catch (e) {
+        if (!cancelled) setRecsError(String(e));
+      } finally {
+        if (!cancelled) setRecsLoading(false);
+      }
+    };
+    fetchRecs();
+    const id = setInterval(fetchRecs, 60_000); // refresh every minute
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  const recsForSelected = useMemo(
+    () => recs?.by_symbol.find((s) => s.underlying === selectedSymbol),
+    [recs, selectedSymbol]
+  );
+
   const symbolConfig = SYMBOLS.find((s) => s.value === selectedSymbol) ?? SYMBOLS[0];
   const expConfig = EXPIRATIONS.find((e) => e.value === selectedExp) ?? EXPIRATIONS[2];
 
@@ -446,6 +551,145 @@ export default function OptionsPage() {
       )}
 
       <div className="max-w-[1800px] mx-auto px-4 py-6 space-y-6">
+        {/* ---- Best Plays Recommender (top of page) ---- */}
+        <Card padding="none">
+          <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <span className="text-sm font-heading text-text-primary">Best Plays — Live Recommender</span>
+              <span className="text-[10px] text-text-tertiary ml-2">
+                Top 2 ITM / OTM per expiry • scored 0-100 (POP + liquidity + spread + greek fit + IV value)
+              </span>
+            </div>
+            <div className="text-[10px] text-text-tertiary font-mono">
+              {recsLoading ? "refreshing…" : recs ? `as of ${new Date(recs.generated_at).toLocaleTimeString()}` : ""}
+            </div>
+          </div>
+
+          {/* Overall Best across the universe */}
+          {recs?.overall_best_trade && (
+            <div className="px-5 py-4 bg-gradient-to-r from-amber-500/10 via-amber-400/5 to-transparent border-b border-amber-400/30">
+              <div className="flex items-center gap-2 mb-2">
+                <Award className="w-4 h-4 text-amber-300" />
+                <span className="text-[11px] font-heading uppercase tracking-wider text-amber-300">
+                  Overall Best Trade (cross-universe)
+                </span>
+              </div>
+              <div className="flex items-center flex-wrap gap-x-6 gap-y-2">
+                <div>
+                  <div className="text-lg font-heading text-text-primary">
+                    {recs.overall_best_trade.contract_id}
+                  </div>
+                  <div className="text-[11px] text-text-tertiary font-mono">
+                    {recs.overall_best_trade.occ_symbol}
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 text-xs font-mono">
+                  <div>
+                    <div className="text-text-tertiary text-[10px] uppercase tracking-wider">Premium</div>
+                    <div className="text-text-primary">${recs.overall_best_trade.mid.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="text-text-tertiary text-[10px] uppercase tracking-wider">Breakeven</div>
+                    <div className="text-text-primary">${recs.overall_best_trade.extras.breakeven.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="text-text-tertiary text-[10px] uppercase tracking-wider">POP</div>
+                    <div className="text-profit">{recs.overall_best_trade.components.probability_of_profit.toFixed(0)}%</div>
+                  </div>
+                  <div>
+                    <div className="text-text-tertiary text-[10px] uppercase tracking-wider">Delta</div>
+                    <div className="text-text-primary">{recs.overall_best_trade.delta.toFixed(3)}</div>
+                  </div>
+                  <div>
+                    <div className="text-text-tertiary text-[10px] uppercase tracking-wider">IV</div>
+                    <div className="text-text-primary">{recs.overall_best_trade.iv.toFixed(1)}%</div>
+                  </div>
+                  <div>
+                    <div className="text-text-tertiary text-[10px] uppercase tracking-wider">Max Loss/Contract</div>
+                    <div className="text-loss">${recs.overall_best_trade.extras.max_loss_per_contract.toFixed(0)}</div>
+                  </div>
+                </div>
+                <div className="ml-auto">
+                  <div className="text-[10px] text-text-tertiary uppercase tracking-wider">Composite</div>
+                  <div className="text-2xl font-heading text-amber-300">
+                    {recs.overall_best_trade.composite_score.toFixed(1)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Per-symbol best plays for the currently selected ticker */}
+          <div className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Star className="w-3.5 h-3.5 text-text-secondary" />
+              <span className="text-xs font-heading text-text-primary">
+                Best Plays for {selectedSymbol}
+              </span>
+              {recsForSelected && (
+                <span className="text-[10px] text-text-tertiary">
+                  · realised vol {(recsForSelected.realised_vol_annualised * 100).toFixed(1)}%
+                </span>
+              )}
+            </div>
+
+            {recsError && (
+              <div className="text-xs text-loss font-mono">{recsError}</div>
+            )}
+
+            {!recsError && !recsForSelected && (
+              <div className="text-xs text-text-tertiary">
+                {recsLoading ? "Loading recommendations…" : `No data for ${selectedSymbol} yet — try SPY, QQQ, AAPL, NVDA, TSLA, MSFT, or META.`}
+              </div>
+            )}
+
+            {recsForSelected?.by_expiry.map((exp) => (
+              <div key={exp.expiry} className="mb-5 last:mb-0">
+                <div className="text-[11px] font-heading text-text-secondary mb-2">
+                  Expiry {exp.expiry} ({exp.dte}d)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {[
+                    { label: "Top ITM Calls", picks: exp.top_itm_calls, accent: "border-emerald-500/40 bg-emerald-500/5" },
+                    { label: "Top OTM Calls", picks: exp.top_otm_calls, accent: "border-sky-500/40 bg-sky-500/5" },
+                    { label: "Top ITM Puts",  picks: exp.top_itm_puts,  accent: "border-fuchsia-500/40 bg-fuchsia-500/5" },
+                    { label: "Top OTM Puts",  picks: exp.top_otm_puts,  accent: "border-rose-500/40 bg-rose-500/5" },
+                  ].map((g) => (
+                    <div key={g.label} className={`rounded-card border ${g.accent} p-3`}>
+                      <div className="text-[10px] font-heading uppercase tracking-wider text-text-secondary mb-2">
+                        {g.label}
+                      </div>
+                      {g.picks.length === 0 ? (
+                        <div className="text-[10px] text-text-tertiary">no picks</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {g.picks.map((p, i) => (
+                            <div key={p.occ_symbol} className="text-[11px] font-mono">
+                              <div className="flex items-center justify-between">
+                                <span className="text-text-primary">
+                                  {i === 0 && <span className="text-amber-300 mr-1">★</span>}
+                                  {p.option_type === "CALL" ? "C" : "P"} {p.strike}
+                                </span>
+                                <span className="text-text-secondary">{p.composite_score.toFixed(1)}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-text-tertiary">
+                                <span>${p.mid.toFixed(2)}</span>
+                                <span>Δ {p.delta.toFixed(2)}</span>
+                                <span>POP {p.components.probability_of_profit.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
         {/* ---- Options Chain Table ---- */}
         <Card padding="none">
           <div className="px-5 py-4 border-b border-border flex items-center justify-between">

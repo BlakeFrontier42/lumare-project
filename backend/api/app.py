@@ -2028,6 +2028,76 @@ async def bot_close_position(symbol: str):
 
 
 # ═══════════════════════════════════════════════════════════
+# Options Recommender
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/api/options/recommendations", tags=["Options"])
+async def options_recommendations(
+    symbols: str = "SPY,QQQ,AAPL,NVDA,TSLA,MSFT,META",
+    weeks: int = 3,
+):
+    """Top picks per (symbol, expiration) plus a single overall best trade.
+
+    Returns, for each (symbol × expiration):
+      * top_itm_calls — 2 best in-the-money calls (bullish, conviction)
+      * top_otm_calls — 2 best out-of-the-money calls (bullish, leveraged)
+      * top_itm_puts  — 2 best in-the-money puts  (bearish, conviction)
+      * top_otm_puts  — 2 best out-of-the-money puts (bearish, leveraged)
+
+    Plus the single highest-composite-score contract across the whole
+    universe as overall_best_trade.
+
+    Composite score (0-100):
+      30% probability of profit, 25% liquidity, 20% spread tightness,
+      15% greek fit (delta in target band), 10% IV value vs realised vol.
+    """
+    from backend.core.options_recommender import recommend_universe
+
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    weeks_ahead = list(range(max(1, min(weeks, 6))))
+
+    # Pull live underlying prices + recent returns for IV estimation.
+    if _engine is None:
+        raise HTTPException(503, "Engine not initialised")
+
+    universe: list[tuple[str, float, list[float]]] = []
+    for sym in syms:
+        try:
+            quote = await _engine.equities_feed.get_quote(sym)
+            spot = float(quote.get("price") or 0) if quote else 0.0
+        except Exception as exc:
+            logger.debug(f"options spot lookup failed for {sym}: {exc}")
+            spot = 0.0
+        if spot <= 0:
+            continue
+
+        # 5m returns for realised vol estimate
+        try:
+            from datetime import date as _date, timedelta as _td
+            today = _date.today()
+            df = await _engine.equities_feed.get_ohlcv(
+                sym, "5min",
+                (today - _td(days=2)).isoformat(),
+                today.isoformat(),
+            )
+            closes = df["close"].astype(float)
+            returns = closes.pct_change().dropna().tail(50).tolist()
+        except Exception:
+            returns = []
+
+        universe.append((sym, spot, returns))
+
+    if not universe:
+        return {"error": "no underlying prices available", "by_symbol": []}
+
+    return recommend_universe(
+        universe,
+        expiries_weeks_ahead=weeks_ahead,
+        top_n=2,
+    )
+
+
+# ═══════════════════════════════════════════════════════════
 # Real Estate Portfolio endpoints
 # ═══════════════════════════════════════════════════════════
 
