@@ -70,10 +70,30 @@ Click **Stop** at any time. Closing an individual position uses the X button on 
 | Mode | Min Score | Real Money | Env Var |
 |------|-----------|------------|---------|
 | **Demo** | 5 | No (paper) | none |
-| **Paper** (default) | 70 | No (paper) | none |
-| **Live** | 70 | **YES** | `LUMARE_ALLOW_LIVE=1` |
+| **Paper** (default) | 30+ (profile threshold) | No (paper) | none |
+| **Live** | 30+ (profile threshold) | **YES** | `LUMARE_ALLOW_LIVE=1` + Coinbase keys |
 
 If the API receives `mode: "live"` and `LUMARE_ALLOW_LIVE` is not exactly `1`, it **silently coerces to `paper`** and logs a warning. This is a hard safety gate — there is no way to accidentally route real-money orders.
+
+### Live Trading (Coinbase)
+
+Live crypto trading goes through `backend/execution/coinbase_executor.py` — a drop-in replacement for the paper simulator that talks to Coinbase Advanced Trade with HMAC-signed requests. To arm:
+
+```bash
+export LUMARE_ALLOW_LIVE=1
+export COINBASE_API_KEY=...
+export COINBASE_API_SECRET=...
+# Start the backend, then in the UI: select "crypto" asset class and Live mode.
+```
+
+What the executor does:
+- Places **limit** orders only (no market orders — slippage protection)
+- Signs every request with HMAC-SHA256 (timestamp + method + path + body)
+- Pulls your real USD balance from `/api/v3/brokerage/accounts` on startup
+- Polls `/orders/historical/fills` each cycle and updates local position state from real fills
+- If credentials are missing or `LUMARE_ALLOW_LIVE` is unset, every order is REJECTED with a clear reason — **no HTTP request is made**
+
+Equity / futures / options live execution still routes through the paper simulator (broker integration is per-asset-class — adding Alpaca/IBKR is a future wave).
 
 ---
 
