@@ -1,0 +1,194 @@
+{
+  "generated": "2026-05-12T01:29:02.845891+00:00",
+  "window_days": 3,
+  "folds": 4,
+  "gap_days": 0,
+  "by_symbol": {
+    "BTC": {
+      "folds": [
+        {
+          "fold": 1,
+          "start": "2026-05-08",
+          "end": "2026-05-11",
+          "trades": 2,
+          "sharpe": -43.918,
+          "profit_factor": 0.81,
+          "win_rate": 50.0,
+          "max_dd": 0.6,
+          "annual_return": 1.5
+        },
+        {
+          "fold": 2,
+          "start": "2026-05-05",
+          "end": "2026-05-08",
+          "trades": 2,
+          "sharpe": -12.231,
+          "profit_factor": 0.227,
+          "win_rate": 50.0,
+          "max_dd": 0.85,
+          "annual_return": -55.5
+        },
+        {
+          "fold": 3,
+          "start": "2026-05-02",
+          "end": "2026-05-05",
+          "trades": 2,
+          "sharpe": -11.758,
+          "profit_factor": 0.0,
+          "win_rate": 0.0,
+          "max_dd": 1.29,
+          "annual_return": -78.4
+        },
+        {
+          "fold": 4,
+          "start": "2026-04-29",
+          "end": "2026-05-02",
+          "trades": 3,
+          "sharpe": 10.123,
+          "profit_factor": 1.402,
+          "win_rate": 33.3,
+          "max_dd": 0.86,
+          "annual_return": 108.8
+        }
+      ],
+      "aggregate": {
+        "n_folds_with_trades": 4,
+        "trades_per_fold": {
+          "n": 4,
+          "mean": 2.25,
+          "stdev": 0.433,
+          "min": 2,
+          "max": 3
+        },
+        "profit_factor": {
+          "n": 4,
+          "mean": 0.61,
+          "stdev": 0.545,
+          "min": 0.0,
+          "max": 1.402
+        },
+        "win_rate_pct": {
+          "n": 4,
+          "mean": 33.325,
+          "stdev": 20.412,
+          "min": 0.0,
+          "max": 50.0
+        },
+        "sharpe": {
+          "n": 4,
+          "mean": -14.446,
+          "stdev": 19.264,
+          "min": -43.918,
+          "max": 10.123
+        },
+        "max_dd_pct": {
+          "n": 4,
+          "mean": 0.9,
+          "stdev": 0.248,
+          "min": 0.6,
+          "max": 1.29
+        },
+        "annual_return_pct": {
+          "n": 4,
+          "mean": -5.9,
+          "stdev": 72.331,
+          "min": -78.4,
+          "max": 108.8
+        }
+      }
+    },
+    "ETH": {
+      "folds": [
+        {
+          "fold": 1,
+          "start": "2026-05-08",
+          "end": "2026-05-11",
+          "trades": 2,
+          "sharpe": -12.174,
+          "profit_factor": 0.0,
+          "win_rate": 0.0,
+          "max_dd": 1.06,
+          "annual_return": -57.6
+        },
+        {
+          "fold": 2,
+          "start": "2026-05-05",
+          "end": "2026-05-08",
+          "trades": 1,
+          "sharpe": 10.594,
+          "profit_factor": Infinity,
+          "win_rate": 100.0,
+          "max_dd": 0.67,
+          "annual_return": 261.0
+        },
+        {
+          "fold": 3,
+          "start": "2026-05-02",
+          "end": "2026-05-05",
+          "trades": 1,
+          "sharpe": -11.751,
+          "profit_factor": 0.0,
+          "win_rate": 0.0,
+          "max_dd": 1.68,
+          "annual_return": -78.8
+        },
+        {
+          "fold": 4,
+          "start": "2026-04-29",
+          "end": "2026-05-02",
+          "trades": 1,
+          "sharpe": 9.213,
+          "profit_factor": Infinity,
+          "win_rate": 100.0,
+          "max_dd": 0.8,
+          "annual_return": 49.7
+        }
+      ],
+      "aggregate": {
+        "n_folds_with_trades": 4,
+        "trades_per_fold": {
+          "n": 4,
+          "mean": 1.25,
+          "stdev": 0.433,
+          "min": 1,
+          "max": 2
+        },
+        "profit_factor": {
+          "n": 2,
+          "mean": 0.0,
+          "stdev": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "win_rate_pct": {
+          "n": 4,
+          "mean": 50.0,
+          "stdev": 50.0,
+          "min": 0.0,
+          "max": 100.0
+        },
+        "sharpe": {
+          "n": 4,
+          "mean": -1.03,
+          "stdev": 10.945,
+          "min": -12.174,
+          "max": 10.594
+        },
+        "max_dd_pct": {
+          "n": 4,
+          "mean": 1.052,
+          "stdev": 0.389,
+          "min": 0.67,
+          "max": 1.68
+        },
+        "annual_return_pct": {
+          "n": 4,
+          "mean": 43.575,
+          "stdev": 134.651,
+          "min": -78.8,
+          "max": 261.0
+        }
+      }
+    }
+  }
+}
