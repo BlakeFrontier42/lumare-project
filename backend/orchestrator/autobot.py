@@ -1106,6 +1106,19 @@ class AutoBot:
             })
         return out
 
+    def get_snapshot(self) -> Dict[str, Any]:
+        """One-shot serialisable view of everything the bot UI cares
+        about. Used by /ws/bot to push state at high frequency without
+        forcing the frontend to coalesce 6 separate fetches."""
+        return {
+            "status": self.get_status(),
+            "positions": self.get_open_positions(),
+            "performance": self.get_performance(),
+            "signals": self.get_signals(50),
+            "activity": self.get_activity_log(50),
+            "trades": self.get_closed_trades(50),
+        }
+
     def get_closed_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Return closed trades from storage in frontend-friendly shape."""
         runner = self._runner

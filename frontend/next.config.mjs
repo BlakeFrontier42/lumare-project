@@ -21,6 +21,13 @@ const nextConfig = {
         source: "/api/:path*",
         destination: "http://localhost:8000/api/:path*",
       },
+      // WebSockets: Next.js rewrites pass the upgrade headers through.
+      // The browser opens ws://localhost:3000/ws/bot and Next forwards
+      // it to the FastAPI backend.
+      {
+        source: "/ws/:path*",
+        destination: "http://localhost:8000/ws/:path*",
+      },
     ];
   },
 

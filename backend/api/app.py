@@ -730,6 +730,33 @@ async def websocket_notifications(websocket: WebSocket):
         notification_manager.disconnect(websocket)
 
 
+@app.websocket("/ws/bot")
+async def websocket_bot(websocket: WebSocket):
+    """Stream the full bot snapshot (status, positions, signals,
+    activity, trades, performance) to the connected client at ~1Hz.
+
+    Replaces six parallel polls per second from the bot page — one open
+    socket per browser tab instead.
+    """
+    from backend.orchestrator.autobot import autobot as _bot
+    import asyncio as _asyncio
+    import json as _json
+
+    await websocket.accept()
+    try:
+        while True:
+            snapshot = _bot.get_snapshot()
+            await websocket.send_text(_json.dumps({
+                "type": "bot_snapshot",
+                "data": snapshot,
+            }))
+            await _asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug(f"WS /ws/bot ended: {exc}")
+
+
 # ═══════════════════════════════════════════════════════════
 # Notification History
 # ═══════════════════════════════════════════════════════════

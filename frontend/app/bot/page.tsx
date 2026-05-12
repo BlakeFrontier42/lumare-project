@@ -545,9 +545,52 @@ export default function BotPage() {
   }, []);
 
   useEffect(() => {
+    // Prime the UI with one fetch so we don't flash an empty state.
     fetchAll();
-    pollRef.current = setInterval(fetchAll, 3000);
+
+    // Try the WebSocket — it streams every component of the bot view
+    // at 1Hz from a single connection. Fall back to polling if the
+    // socket can't open or drops.
+    let ws: WebSocket | null = null;
+    let pollFallback: ReturnType<typeof setInterval> | null = null;
+    let closed = false;
+
+    const startPoll = () => {
+      if (pollFallback) return;
+      pollFallback = setInterval(fetchAll, 3000);
+      pollRef.current = pollFallback;
+    };
+
+    try {
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.host;
+      ws = new WebSocket(`${proto}//${host}/ws/bot`);
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type !== "bot_snapshot" || !msg.data) return;
+          const d = msg.data;
+          if (d.status) setStatus(d.status);
+          if (d.performance) setPerf(d.performance);
+          if (Array.isArray(d.signals)) setSignals(d.signals);
+          if (Array.isArray(d.activity)) setActivity(d.activity);
+          if (Array.isArray(d.positions)) setPositions(d.positions);
+          if (Array.isArray(d.trades)) setClosedTrades(d.trades);
+          setLoading(false);
+        } catch { /* ignore malformed frame */ }
+      };
+      ws.onerror = () => startPoll();
+      ws.onclose = () => {
+        if (!closed) startPoll();
+      };
+    } catch {
+      startPoll();
+    }
+
     return () => {
+      closed = true;
+      if (ws) ws.close();
+      if (pollFallback) clearInterval(pollFallback);
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [fetchAll]);
