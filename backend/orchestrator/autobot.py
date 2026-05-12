@@ -210,6 +210,10 @@ class _ApiRunner(LiveRunner):
         market_data = {
             "symbol": symbol,
             "candles": snapshot.candles,
+            # ScoringEngine sub-engines read market_data["timeframe_data"]
+            # (a dict keyed by 1H/4H/1D etc). Provide both keys so the
+            # live runner and the backtest path agree on the contract.
+            "timeframe_data": snapshot.candles,
             "last_price": snapshot.last_price
             or float(candles_5m["close"].iloc[-1]),
             "funding_rate": getattr(snapshot, "funding_rate", None),

@@ -96,9 +96,19 @@ class LiveRunner:
         self.structure_engine = StructureEngine(self.settings)
         self.flow_engine = FlowEngine(self.settings)
         self.macro_engine = MacroEngine(self.settings)
+        # IMPORTANT: ScoringEngine signature is
+        # (trend, momentum, structure, flow, macro, settings=None).
+        # Passing settings first silently shifted every engine slot by
+        # one — trend_engine became Settings, so .score() raised
+        # AttributeError on every single cycle and every score
+        # defaulted to the 0 fallback. Use keyword args.
         self.scoring_engine = ScoringEngine(
-            self.settings, self.trend_engine, self.momentum_engine,
-            self.structure_engine, self.flow_engine, self.macro_engine,
+            trend_engine=self.trend_engine,
+            momentum_engine=self.momentum_engine,
+            structure_engine=self.structure_engine,
+            flow_engine=self.flow_engine,
+            macro_engine=self.macro_engine,
+            settings=self.settings,
         )
         self.risk_engine = RiskEngine(self.settings, self.storage)
         self.portfolio_engine = PortfolioEngine(self.settings, self.storage, self.risk_engine)
@@ -195,10 +205,12 @@ class LiveRunner:
             logger.warning(f"No 5M data for {symbol}, skipping")
             return
 
-        # Build market data dict for engines
+        # Build market data dict for engines. Sub-engines expect
+        # "timeframe_data" (keyed dict); other code uses "candles" — emit both.
         market_data = {
             "symbol": symbol,
             "candles": snapshot.candles,
+            "timeframe_data": snapshot.candles,
             "last_price": snapshot.last_price or snapshot.candles["5M"]["close"].iloc[-1],
             "funding_rate": snapshot.funding_rate,
             "open_interest": snapshot.open_interest,

@@ -99,8 +99,13 @@ class SignalThresholds:
 # ─── Trade Thresholds ───────────────────────────────────────
 @dataclass
 class TradeThresholds:
-    min_score_to_trade: int = 70          # Below = no trade
-    elevated_score: int = 85              # Above = elevated position size
+    # Global floor — per-asset profiles in core/asset_profiles.py set the
+    # actual entry threshold per market. This is just the safety floor.
+    # Calibrated 2026-05-12 from real Coinbase + yfinance score
+    # distributions: real scores are 15-50 (not 70-100). Setting this
+    # to 30 lets profile thresholds (35-45) do the real gating.
+    min_score_to_trade: int = 30
+    elevated_score: int = 65              # Above = elevated position size
     standard_risk_pct: float = 0.01       # 1% base risk
     elevated_risk_pct: float = 0.0125     # 1.25% elevated risk
     reduced_risk_pct: float = 0.0075      # 0.75% reduced risk

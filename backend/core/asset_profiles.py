@@ -63,14 +63,16 @@ CRYPTO_PROFILE = AssetProfile(
     # Restoring that behavior recovers PF 1.52 on BTC. Regime is still
     # classified and logged for explainability, but it does NOT gate entries.
     regime_mode="bypass",
-    score_threshold=65,
-    short_threshold_bonus=8,
+    # Calibrated 2026-05-12 from real Coinbase OHLCV: p90=45.7, p95=48.7.
+    # 45 fires on the top ~10-15% of signals (~2 trades/day on BTC).
+    score_threshold=45,
+    short_threshold_bonus=4,
     risk_per_trade_mult=1.0,
     allow_shorts=True,
     stop_atr_mult=2.0,
     rr_ratio=3.0,        # Phase 4.6 tuning: 2.5 → 3.0 lifts BTC PF 1.52 → 1.93 (+27%)
     trailing_mult=2.0,
-    notes="Crypto trades 24/7 with structural long bias. Phase 4.6 tuned: PF 1.93 on BTC 1Y.",
+    notes="Crypto 24/7. Calibrated 2026-05-12 on real Coinbase scores (p90=45.7).",
 )
 
 EQUITY_PROFILE = AssetProfile(
@@ -79,42 +81,46 @@ EQUITY_PROFILE = AssetProfile(
     # Equities use strict regime gating — the lower 5m volatility and gap risk
     # mean regime filtering is valuable (don't trade SPY into CHAOTIC days).
     regime_mode="strict",
-    score_threshold=62,          # slightly lower to accommodate equity score dist.
-    short_threshold_bonus=6,     # equities have less structural long bias than crypto
+    # Calibrated 2026-05-12: p90=37.9, p95=45.3. 35 fires on top ~15%.
+    score_threshold=35,
+    short_threshold_bonus=3,     # equities have less structural long bias than crypto
     risk_per_trade_mult=0.8,     # smaller first until validated on real PnL
     allow_shorts=True,
     stop_atr_mult=2.2,           # wider stops — intraday equity whipsaws + gap risk
     rr_ratio=2.8,                # slightly higher R:R to offset lower frequency
     trailing_mult=2.2,
-    notes="US equities: strict regime gating, wider stops, smaller size.",
+    notes="US equities. Calibrated 2026-05-12 on real yfinance scores (p90=37.9).",
 )
 
 FUTURES_PROFILE = AssetProfile(
     name="futures_v1",
     asset_class="futures",
     regime_mode="strict",
-    score_threshold=65,
+    # Calibrated 2026-05-12: p90=37.4. 35 fires on top ~10-15%.
+    score_threshold=35,
     short_threshold_bonus=0,     # futures are symmetric — no long bias
     risk_per_trade_mult=0.8,
     allow_shorts=True,
     stop_atr_mult=2.0,
     rr_ratio=2.5,
     trailing_mult=2.0,
-    notes="ES/NQ/CL futures: symmetric, session-bound, leveraged.",
+    notes="ES/NQ/CL futures: symmetric, session-bound. Calibrated 2026-05-12 (p90=37.4).",
 )
 
 OPTIONS_PROFILE = AssetProfile(
     name="options_v1",
     asset_class="options",
     regime_mode="permissive",
-    score_threshold=70,          # require higher conviction due to theta drag
-    short_threshold_bonus=10,
+    # Calibrated 2026-05-12: p90=36.2, p95=37.9. Premium decay still
+    # demands more conviction than the underlying — 38 fires on top ~7%.
+    score_threshold=38,
+    short_threshold_bonus=5,
     risk_per_trade_mult=0.5,     # half size — IV and theta amplify losses
     allow_shorts=True,
     stop_atr_mult=2.5,
     rr_ratio=3.0,
     trailing_mult=2.5,
-    notes="Options: higher threshold, half size, theta-aware stops.",
+    notes="Options. Calibrated 2026-05-12 on real underlying scores (p90=36.2). Theta-aware sizing.",
 )
 
 
