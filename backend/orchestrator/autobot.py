@@ -165,18 +165,19 @@ class _ApiRunner(LiveRunner):
 
     # ---------------------------------------------------------- symbol process
     async def _process_symbol(self, symbol: str) -> None:  # type: ignore[override]
-        # The bot-level asset_class (set via /api/bot/start) takes
-        # priority over the symbol's natural classification. This is
-        # what makes "options" mode actually trade options on SPY/AAPL
-        # instead of treating them as plain equities.
+        # The bot-level asset_class controls *trading behavior* (do we
+        # buy the underlying or an option contract?). But data routing
+        # is decided per-symbol — if you mix BTC and SPY in one run,
+        # we still need Coinbase for BTC and yfinance for SPY.
         configured_class = self._parent._config.get("asset_class", "")
-        asset_class = configured_class or classify_symbol(symbol)
-        # The data-fetch side still needs to know how to route — options
-        # and futures pull their underlying from the equity feed.
-        data_fetch_class = (
-            "equity" if asset_class in ("options", "futures")
-            else asset_class
-        )
+        natural_class = classify_symbol(symbol)
+        asset_class = configured_class or natural_class
+        # If the configured class doesn't match the symbol's natural
+        # class (e.g. configured="crypto" but symbol="SPY"), prefer the
+        # natural one for data fetching so we get real prices.
+        data_fetch_class = natural_class
+        if natural_class in ("options", "futures"):
+            data_fetch_class = "equity"  # underlying always lives on equity feed
 
         try:
             snapshot = await self.aggregator.fetch_full_snapshot(

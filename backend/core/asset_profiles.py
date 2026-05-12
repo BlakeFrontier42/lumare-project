@@ -63,9 +63,9 @@ CRYPTO_PROFILE = AssetProfile(
     # Restoring that behavior recovers PF 1.52 on BTC. Regime is still
     # classified and logged for explainability, but it does NOT gate entries.
     regime_mode="bypass",
-    # Calibrated 2026-05-12 from real Coinbase OHLCV: p90=45.7, p95=48.7.
-    # 45 fires on the top ~10-15% of signals (~2 trades/day on BTC).
-    score_threshold=45,
+    # Calibrated 2026-05-12 from real Coinbase OHLCV.
+    # 10-iter run: n=120, p90=50.4, p95=57.5. 53 fires on top ~8-10%.
+    score_threshold=53,
     short_threshold_bonus=4,
     risk_per_trade_mult=1.0,
     allow_shorts=True,
@@ -96,8 +96,8 @@ FUTURES_PROFILE = AssetProfile(
     name="futures_v1",
     asset_class="futures",
     regime_mode="strict",
-    # Calibrated 2026-05-12: p90=37.4. 35 fires on top ~10-15%.
-    score_threshold=35,
+    # Calibrated 2026-05-12 (10-iter): n=40, p90=40.2. 40 fires top ~10%.
+    score_threshold=40,
     short_threshold_bonus=0,     # futures are symmetric — no long bias
     risk_per_trade_mult=0.8,
     allow_shorts=True,
