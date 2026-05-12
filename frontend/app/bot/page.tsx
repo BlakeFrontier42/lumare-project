@@ -104,6 +104,12 @@ interface OpenPosition {
   stopLoss: number;
   takeProfit: number;
   entryTime: number; // timestamp ms
+  // Set when the bot is trading a non-spot instrument
+  instrumentType?: "spot" | "options" | "futures" | "perp" | string;
+  optionType?: "CALL" | "PUT" | null;
+  strike?: number | null;
+  expiry?: string | null;
+  contractId?: string | null;
 }
 
 interface ClosedTrade {
@@ -604,6 +610,9 @@ export default function BotPage() {
           interval: cfgInterval,
           max_concurrent: cfgMaxPositions,
           mode: "paper",
+          // Tell the bot which market we're trading so it routes through
+          // the right pipeline (options → contracts, futures → expiries).
+          asset_class: botAssetClass,
           // Demo mode runs a permissive score floor so the operator sees
           // signals materialise into trades within the first cycle on
           // sim data. Live/Paper-production uses settings.trade.min_score_to_trade (70).
@@ -1072,7 +1081,7 @@ export default function BotPage() {
                       >
                         {/* Row 1: Symbol, direction, strategy, close */}
                         <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-mono text-base font-bold">{pos.symbol}</span>
                             <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded ${
                               pos.direction === "LONG" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
@@ -1080,6 +1089,26 @@ export default function BotPage() {
                               {pos.direction === "LONG" ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                               {pos.direction}
                             </span>
+                            {/* Options/Futures contract badge */}
+                            {pos.optionType && (
+                              <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                pos.optionType === "CALL"
+                                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                                  : "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30"
+                              }`}>
+                                {pos.optionType}
+                              </span>
+                            )}
+                            {pos.contractId && (
+                              <span className="text-[10px] font-mono text-amber-300/80" title="Synthetic OPRA-style contract id">
+                                {pos.contractId}
+                              </span>
+                            )}
+                            {pos.instrumentType && pos.instrumentType !== "spot" && !pos.optionType && (
+                              <span className="inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                                {pos.instrumentType.toUpperCase()}
+                              </span>
+                            )}
                             <span className="flex items-center gap-1">
                               <span className="w-2 h-2 rounded-full" style={{ background: STRATEGY_COLORS[pos.strategy] || "#666" }} />
                               <span className="text-[10px] text-gray-500 capitalize">{pos.strategy.replace(/_/g, " ")}</span>

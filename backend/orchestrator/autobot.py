@@ -41,6 +41,12 @@ from loguru import logger
 from backend.live.runner import LiveRunner, TradeProposal
 from backend.config.settings import SETTINGS, RegimeState
 from backend.core.asset_profiles import classify_symbol
+from backend.core.options_pricer import (
+    OptionContract,
+    resolve_weekly_contract,
+    price_option,
+    estimate_iv_from_returns,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -138,11 +144,22 @@ class _ApiRunner(LiveRunner):
 
     # ---------------------------------------------------------- symbol process
     async def _process_symbol(self, symbol: str) -> None:  # type: ignore[override]
-        asset_class = classify_symbol(symbol)
+        # The bot-level asset_class (set via /api/bot/start) takes
+        # priority over the symbol's natural classification. This is
+        # what makes "options" mode actually trade options on SPY/AAPL
+        # instead of treating them as plain equities.
+        configured_class = self._parent._config.get("asset_class", "")
+        asset_class = configured_class or classify_symbol(symbol)
+        # The data-fetch side still needs to know how to route — options
+        # and futures pull their underlying from the equity feed.
+        data_fetch_class = (
+            "equity" if asset_class in ("options", "futures")
+            else asset_class
+        )
 
         try:
             snapshot = await self.aggregator.fetch_full_snapshot(
-                symbol, asset_class
+                symbol, data_fetch_class
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Snapshot fetch failed for {symbol}: {exc}")
@@ -357,7 +374,6 @@ class _ApiRunner(LiveRunner):
                 daily_pnl=float(portfolio_state.get("daily_pnl", 0.0)),
                 peak_equity=float(peak),
             )
-            asset_class = classify_symbol(symbol)
             trade_obj = RETradeProposal(
                 symbol=symbol,
                 direction=direction.lower(),
@@ -395,20 +411,111 @@ class _ApiRunner(LiveRunner):
                 )
                 continue
 
-            # Execute
+            # Execute. For options the executor symbol becomes the
+            # contract id and the order is priced in option premium,
+            # not the underlying.
             adjusted_size = risk_decision.get(
                 "adjusted_size", proposal.position_size
             )
+            order_symbol = symbol
+            order_price = float(proposal.entry_price)
+            order_qty = float(adjusted_size)
+            order_bar = bar_dict
+            contract_obj: Optional[OptionContract] = None
+            contract_meta: Optional[Dict[str, Any]] = None
+            opt_stop = float(proposal.stop_price)
+            opt_tp = float(getattr(proposal, "tp1_price", proposal.stop_price))
+
+            if asset_class == "options":
+                # Resolve a near-ATM weekly contract for this direction.
+                underlying_price = float(market_data["last_price"])
+                contract_obj = resolve_weekly_contract(
+                    symbol, underlying_price, direction
+                )
+                # IV from realised vol on the 5M return series.
+                ret_series = (
+                    candles_5m["close"]
+                    .astype(float)
+                    .pct_change()
+                    .dropna()
+                    .tail(60)
+                    .tolist()
+                )
+                iv = estimate_iv_from_returns(ret_series)
+                quote = price_option(contract_obj, underlying_price, iv)
+                opt_price = quote["price"]
+
+                # Sizing in options: risk per trade ÷ stop distance per
+                # contract, where each contract controls 100 shares.
+                # Stop = 50% of premium loss; TP = 100% premium gain (2R).
+                opt_stop = max(opt_price * 0.5, 0.05)
+                opt_tp = max(opt_price * 2.0, opt_price + 0.10)
+                stop_distance = opt_price - opt_stop
+                portfolio_value = (
+                    self._equity_history[-1]
+                    if self._equity_history else 100_000.0
+                )
+                risk_dollars = portfolio_value * 0.005  # 0.5% per options trade
+                contracts = max(
+                    1, int(risk_dollars / max(stop_distance * 100.0, 0.01))
+                )
+                contracts = min(contracts, 50)  # never more than 50 contracts
+
+                order_symbol = contract_obj.occ_symbol
+                order_price = opt_price
+                order_qty = float(contracts)
+
+                # Synthesise an option-priced bar so process_bar can
+                # actually fill the order at option premium.
+                if contract_obj.option_type == "CALL":
+                    bar_high_src = bar_dict["high"]
+                    bar_low_src = bar_dict["low"]
+                else:  # PUT inverts: option price rises when underlying drops
+                    bar_high_src = bar_dict["low"]
+                    bar_low_src = bar_dict["high"]
+                order_bar = {
+                    "open": price_option(
+                        contract_obj, bar_dict["open"], iv
+                    )["price"],
+                    "high": price_option(
+                        contract_obj, bar_high_src, iv
+                    )["price"],
+                    "low": price_option(
+                        contract_obj, bar_low_src, iv
+                    )["price"],
+                    "close": opt_price,
+                    "volume": bar_dict["volume"],
+                    "timestamp": bar_dict["timestamp"],
+                }
+
+                contract_meta = {
+                    **contract_obj.to_dict(),
+                    "iv": iv,
+                    "delta": quote["delta"],
+                    "days_to_expiry": quote["days_to_expiry"],
+                    "underlying_price_at_entry": underlying_price,
+                    "asset_class": "options",
+                }
+
+                # Pre-seed the executor's market state with option pricing
+                if hasattr(self.executor, "update_market_state"):
+                    self.executor.update_market_state(
+                        order_symbol,
+                        price=opt_price,
+                        adv=10_000_000,
+                        atr=opt_price * 0.05,
+                    )
+
             try:
                 order = self.executor.submit_order(
-                    symbol=symbol,
-                    side="BUY" if direction == "LONG" else "SELL",
-                    price=proposal.entry_price,
-                    quantity=adjusted_size,
-                    leverage=proposal.leverage,
+                    symbol=order_symbol,
+                    side="BUY",  # options are always bought long in this strategy
+                    price=order_price,
+                    quantity=order_qty,
+                    leverage=1.0 if asset_class == "options" else proposal.leverage,
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.error(f"Order submit failed {symbol}: {exc}")
+                logger.error(f"Order submit failed {order_symbol}: {exc}")
                 continue
 
             status_value = (
@@ -418,39 +525,55 @@ class _ApiRunner(LiveRunner):
             )
             if status_value != "REJECTED":
                 self.state.total_trades += 1
+                trade_label = (
+                    f"{direction} {order_qty:.0f}× {contract_obj.contract_id}"
+                    if contract_obj
+                    else f"{direction} {order_qty:.4f} {symbol}"
+                )
                 self._parent._log_activity(
                     "trade",
-                    f"{direction} {adjusted_size:.4f} {symbol} @ "
-                    f"{proposal.entry_price:.2f} (score={total_score:.0f})",
+                    f"{trade_label} @ {order_price:.2f} (score={total_score:.0f})",
                 )
 
-                # Immediately try to fill the order against the current
-                # bar so the operator sees the position appear in the UI
-                # within the same cycle.
+                # Store contract metadata so the UI can render it.
+                if contract_meta is not None:
+                    self._parent._contract_meta[order_symbol] = contract_meta
+
+                # Immediately try to fill against the (synthesised, for
+                # options) current bar.
                 try:
                     if hasattr(self.executor, "process_bar"):
-                        self.executor.process_bar(symbol, bar_dict)
+                        self.executor.process_bar(order_symbol, order_bar)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"Executor fill attempt skipped: {exc}")
                 try:
                     self.storage.store_trade({
                         "trade_id": order.order_id,
-                        "symbol": symbol,
+                        # Persist whichever ticker the executor is keyed on
+                        # so the position/trade lookups stay consistent.
+                        "symbol": order_symbol,
                         "side": direction,  # storage requires LONG/SHORT
                         "entry_time": datetime.now(timezone.utc).isoformat(),
-                        "entry_price": float(proposal.entry_price),
-                        "quantity": float(adjusted_size),
-                        "leverage": float(proposal.leverage),
-                        "stop_loss": float(proposal.stop_price),
-                        "take_profit": float(
-                            getattr(proposal, "tp1_price", proposal.stop_price)
+                        "entry_price": float(order_price),
+                        "quantity": float(order_qty),
+                        "leverage": (
+                            1.0
+                            if asset_class == "options"
+                            else float(proposal.leverage)
                         ),
+                        "stop_loss": float(opt_stop),
+                        "take_profit": float(opt_tp),
                         "risk_pct": float(proposal.risk_pct),
                         "signal_score": int(total_score),
                         "regime": self.state.current_regime,
                         "status": "OPEN",
                         "strategy": "composite",
                         "timeframe": "5M",
+                        # contract_id stored in notes so we can recover
+                        # human-readable contract info from history.
+                        "notes": (
+                            contract_obj.contract_id if contract_obj else None
+                        ),
                     })
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"Trade store skipped: {exc}")
@@ -590,6 +713,11 @@ class AutoBot:
         }
         self._signals: Deque[Dict[str, Any]] = deque(maxlen=500)
         self._activity: Deque[Dict[str, Any]] = deque(maxlen=500)
+        # When trading options/futures, the executor key isn't the bare
+        # underlying — it's the contract id (e.g. "SPY260515C00740000").
+        # This map lets get_open_positions enrich the response with the
+        # human-readable contract metadata.
+        self._contract_meta: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ public
     def start(
@@ -600,6 +728,7 @@ class AutoBot:
         max_concurrent: int,
         min_score: Optional[int] = None,
         mode: str = "paper",
+        asset_class: str = "crypto",
     ) -> None:
         if self._runner and self._runner.state.running:
             self._log_activity("info", "Start ignored — bot already running")
@@ -623,6 +752,12 @@ class AutoBot:
             )
             mode = "paper"
 
+        # Validate asset class — only the four supported markets get
+        # specialised routing. Anything else falls through to spot.
+        asset_class = (asset_class or "crypto").lower()
+        if asset_class not in ("crypto", "equity", "futures", "options"):
+            asset_class = "crypto"
+
         self._config = {
             "symbols": list(symbols),
             "strategies": list(strategies),
@@ -630,6 +765,7 @@ class AutoBot:
             "max_concurrent": int(max_concurrent),
             "mode": mode,
             "min_score": int(min_score) if min_score is not None else None,
+            "asset_class": asset_class,
         }
 
         # Build a fresh runner each start so config changes (symbols,
@@ -925,9 +1061,29 @@ class AutoBot:
                 if entry_dt
                 else int(datetime.now(timezone.utc).timestamp() * 1000)
             )
+            meta = self._contract_meta.get(sym)
+            display_symbol = sym
+            instrument_type = "spot"
+            option_type = None
+            strike = None
+            expiry = None
+            contract_id = None
+            if meta:
+                instrument_type = meta.get("asset_class", "spot")
+                display_symbol = meta.get("underlying", sym)
+                option_type = meta.get("option_type")
+                strike = meta.get("strike")
+                expiry = meta.get("expiry")
+                contract_id = meta.get("contract_id")
+                # The bot direction follows the market view: long-call=LONG,
+                # long-put=SHORT (bearish via puts).
+                if option_type == "PUT":
+                    direction = "SHORT"
+                elif option_type == "CALL":
+                    direction = "LONG"
             out.append({
                 "id": f"pos-{sym}-{side_val}",
-                "symbol": sym,
+                "symbol": display_symbol,
                 "direction": direction,
                 "strategy": "composite",
                 "entryPrice": float(pos.avg_entry_price),
@@ -938,6 +1094,11 @@ class AutoBot:
                 "entryTime": entry_ms,
                 "leverage": float(getattr(pos, "leverage", 1.0)),
                 "unrealizedPnl": float(getattr(pos, "unrealized_pnl", 0)),
+                "instrumentType": instrument_type,
+                "optionType": option_type,
+                "strike": strike,
+                "expiry": expiry,
+                "contractId": contract_id,
             })
         return out
 

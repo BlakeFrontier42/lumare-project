@@ -1938,6 +1938,7 @@ async def bot_start(request: Request):
         max_concurrent = int(body.get("max_concurrent", 3))
         min_score = body.get("min_score")
         mode = body.get("mode", "paper")
+        asset_class = body.get("asset_class", "crypto")
         autobot.start(
             symbols=symbols,
             strategies=strategies,
@@ -1945,6 +1946,7 @@ async def bot_start(request: Request):
             max_concurrent=max_concurrent,
             min_score=int(min_score) if min_score is not None else None,
             mode=str(mode),
+            asset_class=str(asset_class),
         )
         return {"status": "ok", "message": "Bot started", **autobot.get_status()}
     except Exception as exc:
