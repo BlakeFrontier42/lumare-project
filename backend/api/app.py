@@ -7,6 +7,7 @@ scoring signals, portfolio state, backtest results, and alpha feeds.
 
 import asyncio
 import math
+import os
 import random
 import time
 import traceback
@@ -90,6 +91,28 @@ async def lifespan(app: FastAPI):
     logger.info("Lumare API shutting down")
 
 
+# ─── Sentry (production error tracking, opt-in via env) ───────
+# Set SENTRY_DSN to enable. No-op when unset, so dev stays untouched.
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk  # type: ignore
+        from sentry_sdk.integrations.fastapi import FastApiIntegration  # type: ignore
+        from sentry_sdk.integrations.asyncio import AsyncioIntegration  # type: ignore
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            integrations=[FastApiIntegration(), AsyncioIntegration()],
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE", "0.05")),
+            environment=os.getenv("LUMARE_ENV", "production"),
+            release=os.getenv("LUMARE_RELEASE", "1.0.0"),
+        )
+        logger.info("Sentry initialised")
+    except ImportError:
+        logger.warning(
+            "SENTRY_DSN set but sentry-sdk not installed. "
+            "Run: pip install 'sentry-sdk[fastapi]'"
+        )
+
 app = FastAPI(
     title="Lumare Capital Intelligence API",
     description="REST API for the Lumare Macro Intelligence Engine",
@@ -97,13 +120,73 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ─── Rate limiting (in-memory token bucket per client IP) ─────
+# Lightweight protection against runaway clients. Production deployments
+# behind a reverse proxy should layer their own rate limit at the edge
+# (Cloudflare, Caddy, Nginx) — this is a baseline so the API is never
+# unprotected. No Redis dep so it works on free-tier deployments.
+
+from collections import defaultdict
+from threading import Lock
+
+_RATE_BUCKETS: dict[tuple[str, str], list[float]] = defaultdict(list)
+_RATE_LOCK = Lock()
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limit(window_seconds: float, max_calls: int):
+    """FastAPI dependency that throws 429 when client exceeds budget."""
+
+    async def _check(request: Request):
+        now = time.monotonic()
+        key = (_client_ip(request), request.url.path)
+        with _RATE_LOCK:
+            bucket = _RATE_BUCKETS[key]
+            # Evict expired
+            cutoff = now - window_seconds
+            while bucket and bucket[0] < cutoff:
+                bucket.pop(0)
+            if len(bucket) >= max_calls:
+                retry_after = max(1, int(window_seconds - (now - bucket[0])))
+                raise HTTPException(
+                    429,
+                    detail=f"Rate limit exceeded ({max_calls}/{int(window_seconds)}s). "
+                           f"Retry in {retry_after}s.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            bucket.append(now)
+    return _check
+
+
+# Convenience presets for common patterns
+_burst_limit = rate_limit(window_seconds=10, max_calls=10)    # mutation calls
+_read_limit = rate_limit(window_seconds=10, max_calls=100)    # read calls
+_expensive_limit = rate_limit(window_seconds=60, max_calls=20)  # heavy compute
+
+
 # ─── CORS ────────────────────────────────────────────────
+# Production: set LUMARE_CORS_ORIGINS to a comma-separated list of exact
+# allowed origins, e.g. "https://app.lumare.io,https://lumare.vercel.app".
+# Localhost is always allowed for dev. Empty / unset means localhost-only.
+
+_extra_origins = [
+    o.strip()
+    for o in os.getenv("LUMARE_CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=_extra_origins,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE", "PUT", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -143,6 +226,62 @@ async def health_check():
         status="ok" if _engine is not None else "degraded",
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@app.get("/api/health/deep", tags=["System"])
+async def health_check_deep():
+    """Deep health probe for production uptime monitoring.
+
+    Verifies engine, storage, and at least one live data source. Returns
+    a structured payload your monitoring service (UptimeRobot, BetterStack,
+    Datadog, etc.) can alert on.
+    """
+    status = {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "1.0.0",
+        "checks": {},
+    }
+
+    # Engine check
+    status["checks"]["engine"] = "ok" if _engine is not None else "fail"
+
+    # Storage check — quick SELECT
+    if _engine is not None:
+        try:
+            _engine.storage._get_connection().execute("SELECT 1").fetchone()
+            status["checks"]["storage"] = "ok"
+        except Exception as exc:
+            status["checks"]["storage"] = f"fail: {exc}"
+
+    # Live data check — Coinbase ping
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as c:
+            r = await c.get("https://api.exchange.coinbase.com/time")
+            status["checks"]["coinbase"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
+    except Exception as exc:
+        status["checks"]["coinbase"] = f"fail: {exc}"
+
+    # Bot autobot health
+    try:
+        from backend.orchestrator.autobot import autobot
+        bot_status = autobot.get_status()
+        status["checks"]["autobot"] = {
+            "running": bot_status.get("running", False),
+            "any_mock_data": bot_status.get("any_mock_data", False),
+            "kill_switch": bot_status.get("kill_switch", False),
+        }
+    except Exception as exc:
+        status["checks"]["autobot"] = f"fail: {exc}"
+
+    # Aggregate
+    all_ok = all(
+        v == "ok" or (isinstance(v, dict) and not v.get("kill_switch"))
+        for v in status["checks"].values()
+    )
+    if not all_ok:
+        status["status"] = "degraded"
+    return status
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1955,7 +2094,7 @@ async def tax_record_lot(request: Request):
 from backend.orchestrator.autobot import autobot
 
 
-@app.post("/api/bot/start", tags=["Bot"])
+@app.post("/api/bot/start", tags=["Bot"], dependencies=[Depends(_burst_limit)])
 async def bot_start(request: Request):
     try:
         body = await request.json()
@@ -1981,7 +2120,7 @@ async def bot_start(request: Request):
         raise HTTPException(500, detail=str(exc))
 
 
-@app.post("/api/bot/stop", tags=["Bot"])
+@app.post("/api/bot/stop", tags=["Bot"], dependencies=[Depends(_burst_limit)])
 async def bot_stop():
     autobot.stop()
     return {"status": "ok", "message": "Bot stopped"}
@@ -2021,7 +2160,7 @@ async def bot_trades(limit: int = 100):
     return {"trades": autobot.get_closed_trades(limit)}
 
 
-@app.post("/api/bot/positions/{symbol}/close", tags=["Bot"])
+@app.post("/api/bot/positions/{symbol}/close", tags=["Bot"], dependencies=[Depends(_burst_limit)])
 async def bot_close_position(symbol: str):
     """Force-close an open position at market price."""
     return autobot.close_position(symbol)
@@ -2031,7 +2170,7 @@ async def bot_close_position(symbol: str):
 # Options Recommender
 # ═══════════════════════════════════════════════════════════
 
-@app.get("/api/options/recommendations", tags=["Options"])
+@app.get("/api/options/recommendations", tags=["Options"], dependencies=[Depends(_expensive_limit)])
 async def options_recommendations(
     symbols: str = "SPY,QQQ,AAPL,NVDA,TSLA,MSFT,META",
     weeks: int = 3,
