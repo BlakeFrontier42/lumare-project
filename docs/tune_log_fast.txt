@@ -1,0 +1,7 @@
+
+Grid search: 8 configs × 2 symbols = 16 backtests
+Window: 2025-05-12 -> 2026-05-12
+
+  [ 1/8] {'regime_mode': 'bypass', 'score_threshold': 65, 'rr_ratio': 2.5, 'stop_atr_mult': 2.0}    joint=  0.00  qual=False  (784s, wall 13.1m)
+  [ 2/8] {'regime_mode': 'bypass', 'score_threshold': 65, 'rr_ratio': 3.0, 'stop_atr_mult': 2.0}    joint=  0.00  qual=False  (752s, wall 25.6m)
+  [ 3/8] {'regime_mode': 'bypass', 'score_threshold': 70, 'rr_ratio': 2.5, 'stop_atr_mult': 2.0}  

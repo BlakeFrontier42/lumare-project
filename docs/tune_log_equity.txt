@@ -1,0 +1,29 @@
+
+========================================================================
+  TUNING EQUITY  |  symbols=['SPY', 'QQQ', 'AAPL', 'NVDA', 'MSFT']
+  window=2025-05-12 to 2026-05-12
+========================================================================
+
+Grid: 8 configs x 5 symbols = 40 backtests
+
+  [ 1/8] {'regime_mode': 'strict', 'score_threshold': 60, 'rr_ratio': 2.5, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf= 2.05  sum_tr=  12  (28s wall=0.5m)
+  [ 2/8] {'regime_mode': 'strict', 'score_threshold': 60, 'rr_ratio': 3.0, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf= 2.51  sum_tr=  10  (28s wall=0.9m)
+  [ 3/8] {'regime_mode': 'strict', 'score_threshold': 65, 'rr_ratio': 2.5, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf=  inf  sum_tr=   5  (28s wall=1.4m)
+  [ 4/8] {'regime_mode': 'strict', 'score_threshold': 65, 'rr_ratio': 3.0, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf=  inf  sum_tr=   4  (28s wall=1.9m)
+  [ 5/8] {'regime_mode': 'permissive', 'score_threshold': 60, 'rr_ratio': 2.5, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf= 2.05  sum_tr=  12  (28s wall=2.3m)
+  [ 6/8] {'regime_mode': 'permissive', 'score_threshold': 60, 'rr_ratio': 3.0, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf= 2.51  sum_tr=  10  (29s wall=2.8m)
+  [ 7/8] {'regime_mode': 'permissive', 'score_threshold': 65, 'rr_ratio': 2.5, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf= 5.16  sum_tr=   6  (28s wall=3.3m)
+  [ 8/8] {'regime_mode': 'permissive', 'score_threshold': 65, 'rr_ratio': 3.0, 'stop_atr_mult': 2.5}    joint=  0.00  qual=False  min_pf= 6.23  sum_tr=   5  (28s wall=3.8m)
+
+--- TOP 5 for EQUITY ---
+ #      regime  thresh    rr  stop   joint   qual  per-symbol
+  1.      strict      60   2.5   2.5    0.00  False  SPY: T=0 PF=0.00  QQQ: T=7 PF=11.11  AAPL: T=0 PF=0.00  NVDA: T=3 PF=inf  MSFT: T=2 PF=2.05
+  2.      strict      60   3.0   2.5    0.00  False  SPY: T=0 PF=0.00  QQQ: T=5 PF=inf  AAPL: T=0 PF=0.00  NVDA: T=3 PF=inf  MSFT: T=2 PF=2.51
+  3.      strict      65   2.5   2.5    0.00  False  SPY: T=0 PF=0.00  QQQ: T=3 PF=inf  AAPL: T=0 PF=0.00  NVDA: T=1 PF=inf  MSFT: T=1 PF=inf
+  4.      strict      65   3.0   2.5    0.00  False  SPY: T=0 PF=0.00  QQQ: T=2 PF=inf  AAPL: T=0 PF=0.00  NVDA: T=1 PF=inf  MSFT: T=1 PF=inf
+  5.  permissive      60   2.5   2.5    0.00  False  SPY: T=0 PF=0.00  QQQ: T=7 PF=11.11  AAPL: T=0 PF=0.00  NVDA: T=3 PF=inf  MSFT: T=2 PF=2.05
+
+Full results -> docs\tune_universal.json
+
+=== WINNERS PER ASSET CLASS ===
+  equity : regime=strict  thresh=60  rr=2.5  stop=2.5  joint=0.0  qualified=False

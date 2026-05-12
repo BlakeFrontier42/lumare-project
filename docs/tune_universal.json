@@ -1,0 +1,566 @@
+{
+  "equity": {
+    "asset_class": "equity",
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "AAPL",
+      "NVDA",
+      "MSFT"
+    ],
+    "window": {
+      "start": "2025-05-12",
+      "end": "2026-05-12"
+    },
+    "grid": {
+      "regime_mode": [
+        "strict",
+        "permissive"
+      ],
+      "score_threshold": [
+        60,
+        65
+      ],
+      "rr_ratio": [
+        2.5,
+        3.0
+      ],
+      "stop_atr_mult": [
+        2.5
+      ]
+    },
+    "results": [
+      {
+        "config": {
+          "regime_mode": "strict",
+          "score_threshold": 60,
+          "rr_ratio": 2.5,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 7,
+            "pf": 11.111,
+            "wr": 85.7,
+            "sharpe": 6.661,
+            "max_dd": 0.77,
+            "ann_ret": 53.18
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 3,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 3.973,
+            "max_dd": 1.17,
+            "ann_ret": 29.49
+          },
+          "MSFT": {
+            "trades": 2,
+            "pf": 2.051,
+            "wr": 50.0,
+            "sharpe": 0.189,
+            "max_dd": 2.35,
+            "ann_ret": 6.43
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": 2.051,
+          "min_trades": 0,
+          "sum_trades": 12,
+          "avg_wr": 78.6,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "strict",
+          "score_threshold": 60,
+          "rr_ratio": 3.0,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 5,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 7.263,
+            "max_dd": 0.78,
+            "ann_ret": 64.19
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 3,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 4.169,
+            "max_dd": 1.1,
+            "ann_ret": 36.31
+          },
+          "MSFT": {
+            "trades": 2,
+            "pf": 2.509,
+            "wr": 50.0,
+            "sharpe": 0.623,
+            "max_dd": 1.42,
+            "ann_ret": 9.26
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": 2.509,
+          "min_trades": 0,
+          "sum_trades": 10,
+          "avg_wr": 83.3,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "strict",
+          "score_threshold": 65,
+          "rr_ratio": 2.5,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 3,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 4.16,
+            "max_dd": 0.78,
+            "ann_ret": 29.68
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 1,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 2.364,
+            "max_dd": 0.76,
+            "ann_ret": 12.92
+          },
+          "MSFT": {
+            "trades": 1,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 2.647,
+            "max_dd": 0.39,
+            "ann_ret": 13.04
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": Infinity,
+          "min_trades": 0,
+          "sum_trades": 5,
+          "avg_wr": 100.0,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "strict",
+          "score_threshold": 65,
+          "rr_ratio": 3.0,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 2,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 3.936,
+            "max_dd": 0.58,
+            "ann_ret": 22.82
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 1,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 2.268,
+            "max_dd": 1.13,
+            "ann_ret": 15.83
+          },
+          "MSFT": {
+            "trades": 1,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 3.039,
+            "max_dd": 1.15,
+            "ann_ret": 15.96
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": Infinity,
+          "min_trades": 0,
+          "sum_trades": 4,
+          "avg_wr": 100.0,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "permissive",
+          "score_threshold": 60,
+          "rr_ratio": 2.5,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 7,
+            "pf": 11.111,
+            "wr": 85.7,
+            "sharpe": 6.661,
+            "max_dd": 0.77,
+            "ann_ret": 53.18
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 3,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 3.973,
+            "max_dd": 1.17,
+            "ann_ret": 29.49
+          },
+          "MSFT": {
+            "trades": 2,
+            "pf": 2.051,
+            "wr": 50.0,
+            "sharpe": 0.189,
+            "max_dd": 2.35,
+            "ann_ret": 6.43
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": 2.051,
+          "min_trades": 0,
+          "sum_trades": 12,
+          "avg_wr": 78.6,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "permissive",
+          "score_threshold": 60,
+          "rr_ratio": 3.0,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 5,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 7.263,
+            "max_dd": 0.78,
+            "ann_ret": 64.19
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 3,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 4.169,
+            "max_dd": 1.1,
+            "ann_ret": 36.31
+          },
+          "MSFT": {
+            "trades": 2,
+            "pf": 2.509,
+            "wr": 50.0,
+            "sharpe": 0.623,
+            "max_dd": 1.42,
+            "ann_ret": 9.26
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": 2.509,
+          "min_trades": 0,
+          "sum_trades": 10,
+          "avg_wr": 83.3,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "permissive",
+          "score_threshold": 65,
+          "rr_ratio": 2.5,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 3,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 4.16,
+            "max_dd": 0.78,
+            "ann_ret": 29.68
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 2,
+            "pf": 5.16,
+            "wr": 50.0,
+            "sharpe": 1.598,
+            "max_dd": 0.76,
+            "ann_ret": 10.58
+          },
+          "MSFT": {
+            "trades": 1,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 2.647,
+            "max_dd": 0.39,
+            "ann_ret": 13.04
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": 5.16,
+          "min_trades": 0,
+          "sum_trades": 6,
+          "avg_wr": 83.3,
+          "every_symbol_traded": false
+        }
+      },
+      {
+        "config": {
+          "regime_mode": "permissive",
+          "score_threshold": 65,
+          "rr_ratio": 3.0,
+          "stop_atr_mult": 2.5
+        },
+        "by_symbol": {
+          "SPY": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "QQQ": {
+            "trades": 2,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 3.936,
+            "max_dd": 0.58,
+            "ann_ret": 22.82
+          },
+          "AAPL": {
+            "trades": 0,
+            "pf": 0,
+            "wr": 0,
+            "sharpe": 0,
+            "max_dd": 0,
+            "ann_ret": 0
+          },
+          "NVDA": {
+            "trades": 2,
+            "pf": 6.231,
+            "wr": 50.0,
+            "sharpe": 1.739,
+            "max_dd": 1.13,
+            "ann_ret": 13.44
+          },
+          "MSFT": {
+            "trades": 1,
+            "pf": Infinity,
+            "wr": 100.0,
+            "sharpe": 3.039,
+            "max_dd": 1.15,
+            "ann_ret": 15.96
+          }
+        },
+        "score": {
+          "joint_score": 0.0,
+          "qualified": false,
+          "min_pf": 6.231,
+          "min_trades": 0,
+          "sum_trades": 5,
+          "avg_wr": 83.3,
+          "every_symbol_traded": false
+        }
+      }
+    ],
+    "winner": {
+      "config": {
+        "regime_mode": "strict",
+        "score_threshold": 60,
+        "rr_ratio": 2.5,
+        "stop_atr_mult": 2.5
+      },
+      "by_symbol": {
+        "SPY": {
+          "trades": 0,
+          "pf": 0,
+          "wr": 0,
+          "sharpe": 0,
+          "max_dd": 0,
+          "ann_ret": 0
+        },
+        "QQQ": {
+          "trades": 7,
+          "pf": 11.111,
+          "wr": 85.7,
+          "sharpe": 6.661,
+          "max_dd": 0.77,
+          "ann_ret": 53.18
+        },
+        "AAPL": {
+          "trades": 0,
+          "pf": 0,
+          "wr": 0,
+          "sharpe": 0,
+          "max_dd": 0,
+          "ann_ret": 0
+        },
+        "NVDA": {
+          "trades": 3,
+          "pf": Infinity,
+          "wr": 100.0,
+          "sharpe": 3.973,
+          "max_dd": 1.17,
+          "ann_ret": 29.49
+        },
+        "MSFT": {
+          "trades": 2,
+          "pf": 2.051,
+          "wr": 50.0,
+          "sharpe": 0.189,
+          "max_dd": 2.35,
+          "ann_ret": 6.43
+        }
+      },
+      "score": {
+        "joint_score": 0.0,
+        "qualified": false,
+        "min_pf": 2.051,
+        "min_trades": 0,
+        "sum_trades": 12,
+        "avg_wr": 78.6,
+        "every_symbol_traded": false
+      }
+    }
+  }
+}
