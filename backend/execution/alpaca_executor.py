@@ -2,12 +2,22 @@
 alpaca_executor.py — US Equities Execution via Alpaca API
 Phase 2 executor for stocks and options.
 
-SAFETY: Market orders DISABLED. Kill switch enforced.
+SAFETY: Market orders DISABLED. Kill switch enforced. Live mode gated
+by LUMARE_ALLOW_LIVE=1.
+
+Two surfaces:
+  * AlpacaExecutor — the original direct API (place_limit_order, etc.)
+    used by manual/REST callers.
+  * AutobotAlpacaExecutor (at bottom) — autobot-compatible drop-in
+    mirror of PaperSimulator / CoinbaseExecutor (submit_order,
+    process_bar, positions: Dict[str, SimPosition], get_portfolio).
 """
 
+import os
+import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from loguru import logger
@@ -41,8 +51,13 @@ class AlpacaExecutor:
     def __init__(self, settings: Settings = None, paper: bool = True):
         self.settings = settings or SETTINGS
         self.base_url = self.PAPER_URL if paper else self.LIVE_URL
-        self.api_key = self.settings.api.ALPACA_KEY
-        self.api_secret = self.settings.api.ALPACA_SECRET
+        # Settings.api.ALPACA_KEY may be unset — also accept env vars.
+        self.api_key = getattr(
+            getattr(self.settings, "api", None), "ALPACA_KEY", ""
+        ) or os.getenv("ALPACA_API_KEY", "")
+        self.api_secret = getattr(
+            getattr(self.settings, "api", None), "ALPACA_SECRET", ""
+        ) or os.getenv("ALPACA_API_SECRET", "")
         self._kill_switch = False
         self._client = httpx.Client(
             timeout=30.0,
@@ -201,3 +216,205 @@ class AlpacaExecutor:
 
     def close(self):
         self._client.close()
+
+
+# ---------------------------------------------------------------------------
+# Autobot-compatible wrapper
+# ---------------------------------------------------------------------------
+
+from backend.execution.paper_simulator import (
+    Order, OrderSide, OrderStatus, OrderType, SimPosition,
+)
+
+
+def is_live_trading_allowed() -> bool:
+    return os.getenv("LUMARE_ALLOW_LIVE", "0") == "1"
+
+
+def have_alpaca_credentials() -> bool:
+    return bool(os.getenv("ALPACA_API_KEY") and os.getenv("ALPACA_API_SECRET"))
+
+
+class AutobotAlpacaExecutor:
+    """Autobot-compatible facade over AlpacaExecutor.
+
+    Provides the same interface as PaperSimulator and CoinbaseExecutor:
+      - submit_order(symbol, side, price, quantity, leverage) -> Order
+      - process_bar(symbol, bar) — refreshes price + syncs fills
+      - update_market_state(symbol, price, adv, atr)
+      - get_portfolio() -> dict
+      - positions: Dict[str, SimPosition]
+      - cash, _prices
+
+    Triple-locked safety (matches Coinbase pattern):
+      1. LUMARE_ALLOW_LIVE=1
+      2. ALPACA_API_KEY + ALPACA_API_SECRET set
+      3. mode="live" passed by autobot
+    Without all three: every order returns REJECTED, no HTTP.
+
+    Defaults to **paper-api.alpaca.markets** even when armed. To send
+    real-money orders set ALPACA_BASE_URL=https://api.alpaca.markets.
+    """
+
+    def __init__(self, settings=None, initial_capital: float = 100_000.0):
+        self.settings = settings or SETTINGS
+        self.initial_capital = initial_capital
+        self.cash = initial_capital
+        self.positions: Dict[str, SimPosition] = {}
+        self.open_orders: Dict[str, Order] = {}
+        self.order_history: List[Order] = []
+        self._prices: Dict[str, float] = {}
+
+        self.live_armed = is_live_trading_allowed() and have_alpaca_credentials()
+        # Default to paper Alpaca even when armed
+        base_url = os.getenv(
+            "ALPACA_BASE_URL", AlpacaExecutor.PAPER_URL
+        )
+        self.is_paper = "paper" in base_url
+        self._inner: Optional[AlpacaExecutor] = None
+        if self.live_armed:
+            try:
+                self._inner = AlpacaExecutor(
+                    settings=self.settings,
+                    paper=self.is_paper,
+                )
+                # Override base_url if user provided an explicit one
+                if base_url != self._inner.base_url:
+                    self._inner.base_url = base_url
+            except Exception as exc:
+                logger.error(f"Alpaca init failed, staying disarmed: {exc}")
+                self.live_armed = False
+
+        if not self.live_armed:
+            mode = "DISARMED (no creds or LUMARE_ALLOW_LIVE not set)"
+        elif self.is_paper:
+            mode = f"ARMED PAPER ({base_url})"
+        else:
+            mode = f"ARMED LIVE — REAL MONEY ({base_url})"
+        logger.warning(f"AutobotAlpacaExecutor initialised — {mode}")
+
+    def submit_order(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        quantity: float,
+        leverage: float = 1.0,
+        order_type: str = "LIMIT",
+    ) -> Order:
+        oid = str(uuid.uuid4())
+        order = Order(
+            order_id=oid,
+            symbol=symbol.upper(),
+            side=OrderSide(side.upper()),
+            order_type=OrderType.LIMIT if order_type.upper() == "LIMIT" else OrderType.MARKET,
+            price=price,
+            quantity=quantity,
+            leverage=1.0,
+            status=OrderStatus.PENDING,
+        )
+
+        if order.order_type == OrderType.MARKET:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = "Market orders disabled. Use LIMIT."
+            self.order_history.append(order)
+            return order
+
+        if not self.live_armed or self._inner is None:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = (
+                "Live trading disarmed (need LUMARE_ALLOW_LIVE=1 + "
+                "ALPACA_API_KEY/SECRET)"
+            )
+            self.order_history.append(order)
+            return order
+
+        try:
+            qty_int = max(int(quantity), 1)  # Alpaca needs whole shares
+            resp = self._inner.place_limit_order(
+                symbol.upper(),
+                "buy" if side.upper() == "BUY" else "sell",
+                price,
+                qty_int,
+            )
+            if resp.success:
+                order.status = OrderStatus.OPEN
+                order.metadata = {
+                    "alpaca_order_id": resp.order_id,
+                    "alpaca_status": resp.status,
+                    "raw": resp.raw_response,
+                }
+                self.open_orders[oid] = order
+            else:
+                order.status = OrderStatus.REJECTED
+                order.reject_reason = resp.error or "alpaca rejected"
+        except Exception as exc:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = f"network: {exc}"
+            logger.error(f"Alpaca submit failed: {exc}")
+
+        self.order_history.append(order)
+        return order
+
+    def update_market_state(
+        self, symbol: str, price: float, adv: float = 0, atr: float = 0
+    ):
+        self._prices[symbol] = price
+
+    def process_bar(self, symbol: str, bar: dict):
+        self._prices[symbol] = float(bar.get("close", 0))
+        if not self.live_armed or self._inner is None:
+            return
+        try:
+            positions = self._inner.get_positions()
+        except Exception:
+            return
+        self.positions = {}
+        for p in positions:
+            try:
+                sym = p.get("symbol", "").upper()
+                qty = float(p.get("qty", 0) or 0)
+                if qty == 0:
+                    continue
+                self.positions[sym] = SimPosition(
+                    symbol=sym,
+                    side=OrderSide.BUY if qty > 0 else OrderSide.SELL,
+                    quantity=abs(qty),
+                    avg_entry_price=float(p.get("avg_entry_price", 0) or 0),
+                    leverage=1.0,
+                    unrealized_pnl=float(p.get("unrealized_pl", 0) or 0),
+                )
+            except Exception as exc:
+                logger.debug(f"Skip malformed Alpaca position: {exc}")
+
+    def get_portfolio(self) -> Dict[str, Any]:
+        unrealized = sum(p.unrealized_pnl for p in self.positions.values())
+        notional = sum(
+            p.quantity * self._prices.get(p.symbol, p.avg_entry_price)
+            for p in self.positions.values()
+        )
+        return {
+            "total_value": self.cash + notional + unrealized,
+            "cash": self.cash,
+            "num_positions": len(self.positions),
+            "positions": {s: p for s, p in self.positions.items()},
+            "unrealized_pnl": unrealized,
+            "realized_pnl": 0,
+        }
+
+    def sync_account_balance(self):
+        if not self.live_armed or self._inner is None:
+            return
+        try:
+            acct = self._inner.get_account()
+            cash = float(acct.get("cash", 0) or 0)
+            if cash > 0:
+                self.cash = cash
+                self.initial_capital = cash
+                logger.info(f"Alpaca cash balance: ${cash:,.2f}")
+        except Exception as exc:
+            logger.warning(f"Alpaca account sync failed: {exc}")
+
+    def close(self):
+        if self._inner is not None:
+            self._inner.close()

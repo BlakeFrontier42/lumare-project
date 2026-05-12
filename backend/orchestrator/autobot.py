@@ -75,26 +75,43 @@ class _ApiRunner(LiveRunner):
         self.api_symbols: List[str] = []
         self.interval_seconds: int = 60
         super().__init__(*args, **kwargs)
-        # If the parent asked for live mode, swap PaperSimulator for
-        # CoinbaseExecutor. The Coinbase executor checks LUMARE_ALLOW_LIVE
-        # internally; without that flag it returns REJECTED on every
-        # order so no real money moves.
-        if (parent._config.get("mode", "paper") == "live"
-                and parent._config.get("asset_class", "crypto") == "crypto"):
+        # Live-mode executor selection. Triple-locked safety:
+        #   1. mode="live" passed to /api/bot/start
+        #   2. LUMARE_ALLOW_LIVE=1 in env
+        #   3. The relevant broker's API keys are present
+        # Any miss → falls back to PaperSimulator (safe default).
+        if parent._config.get("mode", "paper") == "live":
+            asset_class = parent._config.get("asset_class", "crypto")
             try:
-                from backend.execution.coinbase_executor import CoinbaseExecutor
-                self.executor = CoinbaseExecutor(
-                    settings=self.settings,
-                    initial_capital=self.executor.initial_capital,
-                )
-                self.executor.sync_account_balance()
-                logger.warning(
-                    "Live mode: swapped PaperSimulator → CoinbaseExecutor"
-                )
+                if asset_class == "crypto":
+                    from backend.execution.coinbase_executor import CoinbaseExecutor
+                    self.executor = CoinbaseExecutor(
+                        settings=self.settings,
+                        initial_capital=self.executor.initial_capital,
+                    )
+                    self.executor.sync_account_balance()
+                    logger.warning(
+                        "Live mode: swapped PaperSimulator → CoinbaseExecutor"
+                    )
+                elif asset_class == "equity":
+                    from backend.execution.alpaca_executor import AutobotAlpacaExecutor
+                    self.executor = AutobotAlpacaExecutor(
+                        settings=self.settings,
+                        initial_capital=self.executor.initial_capital,
+                    )
+                    self.executor.sync_account_balance()
+                    logger.warning(
+                        "Live mode: swapped PaperSimulator → AutobotAlpacaExecutor"
+                    )
+                else:
+                    logger.warning(
+                        f"Live mode requested for asset_class={asset_class} "
+                        f"— no live broker wired, staying on PaperSimulator"
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    f"Failed to initialise CoinbaseExecutor, "
-                    f"staying on PaperSimulator: {exc}"
+                    f"Failed to initialise live executor for "
+                    f"{asset_class}: {exc}. Staying on PaperSimulator."
                 )
 
     # ------------------------------------------------------------------ cycle

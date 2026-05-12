@@ -75,25 +75,41 @@ Click **Stop** at any time. Closing an individual position uses the X button on 
 
 If the API receives `mode: "live"` and `LUMARE_ALLOW_LIVE` is not exactly `1`, it **silently coerces to `paper`** and logs a warning. This is a hard safety gate — there is no way to accidentally route real-money orders.
 
-### Live Trading (Coinbase)
+### Live Trading
 
-Live crypto trading goes through `backend/execution/coinbase_executor.py` — a drop-in replacement for the paper simulator that talks to Coinbase Advanced Trade with HMAC-signed requests. To arm:
+Triple-locked safety: real-money orders need all three:
+1. `LUMARE_ALLOW_LIVE=1` env var
+2. Broker API keys for the asset class
+3. `mode: "live"` passed to `/api/bot/start`
 
+Without all three, every order returns REJECTED. No HTTP is sent.
+
+**Crypto via Coinbase Advanced Trade:**
 ```bash
 export LUMARE_ALLOW_LIVE=1
 export COINBASE_API_KEY=...
 export COINBASE_API_SECRET=...
-# Start the backend, then in the UI: select "crypto" asset class and Live mode.
 ```
 
-What the executor does:
-- Places **limit** orders only (no market orders — slippage protection)
-- Signs every request with HMAC-SHA256 (timestamp + method + path + body)
-- Pulls your real USD balance from `/api/v3/brokerage/accounts` on startup
-- Polls `/orders/historical/fills` each cycle and updates local position state from real fills
-- If credentials are missing or `LUMARE_ALLOW_LIVE` is unset, every order is REJECTED with a clear reason — **no HTTP request is made**
+**Equities via Alpaca** (defaults to paper-api.alpaca.markets — see `backend/execution/alpaca_executor.py::AutobotAlpacaExecutor`):
+```bash
+export LUMARE_ALLOW_LIVE=1
+export ALPACA_API_KEY=...
+export ALPACA_API_SECRET=...
+# Only flip to real money explicitly:
+export ALPACA_BASE_URL=https://api.alpaca.markets
+```
 
-Equity / futures / options live execution still routes through the paper simulator (broker integration is per-asset-class — adding Alpaca/IBKR is a future wave).
+Both executors:
+- LIMIT orders only (no market — slippage protection)
+- Pull your real cash balance on startup
+- Reconcile positions from broker each cycle
+
+### Multi-tenant + Cloud
+
+- [**docs/POSTGRES_MIGRATION.md**](docs/POSTGRES_MIGRATION.md) — when/how to swap SQLite for Postgres
+- [**docs/DEPLOY.md**](docs/DEPLOY.md) — Railway / Fly.io / Render deployment guides
+- Set `LUMARE_JWT_SECRET` to flip to per-user bot isolation (`backend/api/auth.py`)
 
 ---
 
