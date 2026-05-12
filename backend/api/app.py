@@ -2166,6 +2166,18 @@ async def bot_close_position(symbol: str):
     return autobot.close_position(symbol)
 
 
+@app.post("/api/bot/symbols/{symbol}/kill", tags=["Bot"], dependencies=[Depends(_burst_limit)])
+async def bot_kill_symbol(symbol: str, reason: str = "manual"):
+    """Manually disable a symbol from new entries. Existing positions still managed."""
+    return autobot.kill_symbol(symbol, reason)
+
+
+@app.post("/api/bot/symbols/{symbol}/reset", tags=["Bot"], dependencies=[Depends(_burst_limit)])
+async def bot_reset_symbol(symbol: str):
+    """Clear a symbol's kill state — re-enable new entries."""
+    return autobot.reset_symbol_kill(symbol)
+
+
 # ═══════════════════════════════════════════════════════════
 # Options Recommender
 # ═══════════════════════════════════════════════════════════

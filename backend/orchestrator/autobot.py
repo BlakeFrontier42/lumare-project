@@ -131,7 +131,24 @@ class _ApiRunner(LiveRunner):
             f"Cycle {self.state.total_cycles} starting — {len(symbols)} symbols",
         )
 
+        # Refresh per-symbol kill states from recent closed trades.
+        # A symbol whose rolling PF has degraded gets locked out of new
+        # entries (existing positions are still managed).
+        try:
+            self._parent._update_symbol_kills(self.storage)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Kill-switch update skipped: {exc}")
+
         for symbol in symbols:
+            kill = self._parent._symbol_kills.get(symbol.upper())
+            if kill and kill.get("active"):
+                self._parent._log_activity(
+                    "kill",
+                    f"{symbol} skipped — rolling PF {kill['pf']:.2f} "
+                    f"below {kill['threshold']:.2f} after "
+                    f"{kill['samples']} trades",
+                )
+                continue
             try:
                 await self._process_symbol(symbol)
             except Exception as exc:  # noqa: BLE001
@@ -761,6 +778,16 @@ class AutoBot:
         # This map lets get_open_positions enrich the response with the
         # human-readable contract metadata.
         self._contract_meta: Dict[str, Dict[str, Any]] = {}
+        # Per-symbol kill switch state. When a symbol's rolling PF
+        # drops below KILL_PF_THRESHOLD across at least KILL_MIN_SAMPLES
+        # closed trades, it stops opening new positions automatically.
+        # Existing positions are still managed (stops/TPs honoured).
+        # Operator can re-enable via POST /api/bot/symbols/{sym}/reset
+        self._symbol_kills: Dict[str, Dict[str, Any]] = {}
+        # Tunable defaults — surfaced in get_status() as kill_config
+        self._kill_min_samples = 10        # need 10 trades before kill applies
+        self._kill_pf_threshold = 1.0      # PF < 1.0 = stop trading symbol
+        self._kill_window = 25             # rolling window of last N trades
 
     # ------------------------------------------------------------------ public
     def start(
@@ -908,6 +935,12 @@ class AutoBot:
             "mode": self._config.get("mode", "paper"),
             "data_sources": data_sources,
             "any_mock_data": any_mock,
+            "symbol_kills": dict(self._symbol_kills),
+            "kill_config": {
+                "min_samples": self._kill_min_samples,
+                "pf_threshold": self._kill_pf_threshold,
+                "window": self._kill_window,
+            },
         }
 
     def get_performance(self) -> Dict[str, Any]:
@@ -1209,6 +1242,113 @@ class AutoBot:
         return out
 
     # ------------------------------------------------------------ internal
+    # ------------------------------------------------------------ kills
+    def _update_symbol_kills(self, storage) -> None:
+        """Recompute per-symbol rolling PF and toggle the kill state.
+
+        A symbol gets killed when:
+          * At least self._kill_min_samples closed trades exist
+          * Rolling PF over last self._kill_window trades < self._kill_pf_threshold
+
+        Killed symbols stay killed until an explicit reset
+        (POST /api/bot/symbols/{symbol}/reset).
+        """
+        from datetime import timedelta
+        try:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=365)
+            rows = storage.get_trades(
+                start=start.isoformat(),
+                end=end.isoformat(),
+                status="CLOSED",
+            ) or []
+        except Exception:
+            return
+
+        # Group by underlying symbol — for options the storage symbol
+        # is the OCC id, so we need to map back.
+        by_symbol: dict[str, list[float]] = {}
+        for r in rows[-1000:]:  # cap to last 1000 trades
+            pnl = r.get("pnl")
+            if pnl is None:
+                continue
+            sym = (r.get("symbol") or "").upper()
+            # Map options OCC symbol back to underlying via contract_meta.
+            meta = self._contract_meta.get(sym)
+            display = meta.get("underlying", sym) if meta else sym
+            by_symbol.setdefault(display, []).append(float(pnl))
+
+        for sym, pnls in by_symbol.items():
+            window = pnls[-self._kill_window:]
+            if len(window) < self._kill_min_samples:
+                # Not enough data — clear any stale kill state (if not
+                # manually pinned).
+                state = self._symbol_kills.get(sym)
+                if state and not state.get("manual", False):
+                    self._symbol_kills.pop(sym, None)
+                continue
+
+            wins = sum(p for p in window if p > 0)
+            losses = abs(sum(p for p in window if p < 0))
+            if losses == 0:
+                pf = float("inf") if wins > 0 else 0.0
+            else:
+                pf = wins / losses
+
+            should_kill = pf < self._kill_pf_threshold
+            current = self._symbol_kills.get(sym)
+
+            if should_kill:
+                if not current or not current.get("active"):
+                    # First trip — log it
+                    self._log_activity(
+                        "kill",
+                        f"{sym} kill-switch ARMED — rolling PF "
+                        f"{pf:.2f} after {len(window)} trades "
+                        f"(threshold {self._kill_pf_threshold:.2f})",
+                    )
+                self._symbol_kills[sym] = {
+                    "active": True,
+                    "pf": round(pf if pf != float("inf") else 99.99, 3),
+                    "samples": len(window),
+                    "threshold": self._kill_pf_threshold,
+                    "armed_at": datetime.now(timezone.utc).isoformat(),
+                    "manual": bool(current.get("manual", False)) if current else False,
+                }
+            else:
+                # PF recovered. Only auto-clear if not manually pinned.
+                if current and current.get("active") and not current.get("manual", False):
+                    self._log_activity(
+                        "kill",
+                        f"{sym} kill-switch CLEARED — rolling PF "
+                        f"recovered to {pf:.2f}",
+                    )
+                    self._symbol_kills.pop(sym, None)
+
+    def reset_symbol_kill(self, symbol: str) -> dict:
+        """Operator override — clear a symbol's kill state immediately."""
+        sym = symbol.upper()
+        existed = self._symbol_kills.pop(sym, None)
+        if existed:
+            self._log_activity("kill", f"{sym} kill-switch RESET by operator")
+            return {"reset": True, "symbol": sym, "previous_state": existed}
+        return {"reset": False, "symbol": sym, "reason": "no active kill"}
+
+    def kill_symbol(self, symbol: str, reason: str = "manual") -> dict:
+        """Operator override — manually kill a symbol regardless of PF."""
+        sym = symbol.upper()
+        self._symbol_kills[sym] = {
+            "active": True,
+            "pf": 0.0,
+            "samples": 0,
+            "threshold": self._kill_pf_threshold,
+            "armed_at": datetime.now(timezone.utc).isoformat(),
+            "manual": True,
+            "reason": reason,
+        }
+        self._log_activity("kill", f"{sym} MANUALLY KILLED — {reason}")
+        return {"killed": True, "symbol": sym}
+
     def _record_signal(self, signal: Dict[str, Any]) -> None:
         self._signals.append(signal)
 
