@@ -65,7 +65,7 @@ async def _pull_crypto_paginated(symbol: str, timeframe: str, total_bars: int):
         timeout=httpx.Timeout(8.0, connect=4.0),
         headers={"User-Agent": "lumare/1.0"},
     ) as client:
-        for _ in range(min(pages_needed, 40)):  # hard cap to avoid abuse
+        for _ in range(min(pages_needed, 400)):  # cap for safety, ~2min wall time
             start_dt = end_dt - timedelta(seconds=page_seconds)
             url = (
                 f"https://api.exchange.coinbase.com/products/{pair}/candles"

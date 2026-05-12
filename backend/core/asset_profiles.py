@@ -63,10 +63,13 @@ CRYPTO_PROFILE = AssetProfile(
     # Restoring that behavior recovers PF 1.52 on BTC. Regime is still
     # classified and logged for explainability, but it does NOT gate entries.
     regime_mode="bypass",
-    # Calibrated 2026-05-12 from real Coinbase OHLCV.
-    # 10-iter run: n=120, p90=50.4, p95=57.5. 53 fires on top ~8-10%.
-    score_threshold=53,
-    short_threshold_bonus=4,
+    # PHASE 4.6 VALIDATED VALUE — DO NOT lower based on short live samples.
+    # 65 was tuned against a 1-year BTC backtest that produced PF 1.93,
+    # 57.9% win rate, Sharpe 2.6, 19 trades. A 30-second live score scrape
+    # is NOT enough evidence to override that. If you want to retune,
+    # reload 1Y of OHLCV and re-run the full backtest first.
+    score_threshold=65,
+    short_threshold_bonus=8,
     risk_per_trade_mult=1.0,
     allow_shorts=True,
     stop_atr_mult=2.0,
@@ -81,9 +84,11 @@ EQUITY_PROFILE = AssetProfile(
     # Equities use strict regime gating — the lower 5m volatility and gap risk
     # mean regime filtering is valuable (don't trade SPY into CHAOTIC days).
     regime_mode="strict",
-    # Calibrated 2026-05-12: p90=37.9, p95=45.3. 35 fires on top ~15%.
-    score_threshold=35,
-    short_threshold_bonus=3,     # equities have less structural long bias than crypto
+    # Original Phase 4.6 value. Equity sweep on real data showed MSFT
+    # and GOOGL firing trades at 62, others not. Lowering would only
+    # be safe after a multi-month backtest that proves it.
+    score_threshold=62,
+    short_threshold_bonus=6,     # equities have less structural long bias than crypto
     risk_per_trade_mult=0.8,     # smaller first until validated on real PnL
     allow_shorts=True,
     stop_atr_mult=2.2,           # wider stops — intraday equity whipsaws + gap risk
@@ -96,8 +101,9 @@ FUTURES_PROFILE = AssetProfile(
     name="futures_v1",
     asset_class="futures",
     regime_mode="strict",
-    # Calibrated 2026-05-12 (10-iter): n=40, p90=40.2. 40 fires top ~10%.
-    score_threshold=40,
+    # Original Phase 4.6 value — kept until walk-forward on real
+    # futures data validates anything lower.
+    score_threshold=65,
     short_threshold_bonus=0,     # futures are symmetric — no long bias
     risk_per_trade_mult=0.8,
     allow_shorts=True,
@@ -111,10 +117,11 @@ OPTIONS_PROFILE = AssetProfile(
     name="options_v1",
     asset_class="options",
     regime_mode="permissive",
-    # Calibrated 2026-05-12: p90=36.2, p95=37.9. Premium decay still
-    # demands more conviction than the underlying — 38 fires on top ~7%.
-    score_threshold=38,
-    short_threshold_bonus=5,
+    # Original Phase 4.6 value. Options need MORE conviction than the
+    # underlying because premium decays daily. 70 stays until a
+    # multi-month options backtest justifies lower.
+    score_threshold=70,
+    short_threshold_bonus=10,
     risk_per_trade_mult=0.5,     # half size — IV and theta amplify losses
     allow_shorts=True,
     stop_atr_mult=2.5,
