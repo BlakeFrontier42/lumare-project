@@ -1,0 +1,3 @@
+ETH-only grid: 18 configs × 1 symbol = 18 backtests
+
+  [ 1/18] {'regime_mode': 'bypass', 'score_threshold': 60, 'rr_ratio': 2.5, 'stop_atr_mult': 2.0}  

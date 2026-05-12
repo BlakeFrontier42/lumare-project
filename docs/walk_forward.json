@@ -1,286 +1,105 @@
 {
-  "generated": "2026-05-12T02:14:58.085908+00:00",
-  "window_days": 7,
-  "folds": 4,
+  "generated": "2026-05-12T03:03:04.360131+00:00",
+  "window_days": 30,
+  "folds": 6,
   "gap_days": 0,
   "by_symbol": {
     "BTC": {
       "folds": [
         {
           "fold": 1,
-          "start": "2026-05-05",
+          "start": "2026-04-12",
           "end": "2026-05-12",
-          "trades": 4,
-          "sharpe": -12.816,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 2.55,
-          "annual_return": -71.8
+          "trades": 0,
+          "note": "no trades"
         },
         {
           "fold": 2,
-          "start": "2026-04-28",
-          "end": "2026-05-05",
-          "trades": 4,
-          "sharpe": -6.447,
-          "profit_factor": 0.685,
-          "win_rate": 50.0,
-          "max_dd": 1.3,
-          "annual_return": -26.1
+          "start": "2026-03-13",
+          "end": "2026-04-12",
+          "trades": 0,
+          "note": "no trades"
         },
         {
           "fold": 3,
-          "start": "2026-04-21",
-          "end": "2026-04-28",
-          "trades": 2,
-          "sharpe": -6.64,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 1.55,
-          "annual_return": -45.1
+          "start": "2026-02-11",
+          "end": "2026-03-13",
+          "trades": 0,
+          "note": "no trades"
         },
         {
           "fold": 4,
-          "start": "2026-04-14",
-          "end": "2026-04-21",
-          "trades": 4,
-          "sharpe": -0.223,
-          "profit_factor": 0.975,
-          "win_rate": 25.0,
-          "max_dd": 1.76,
-          "annual_return": 2.4
+          "start": "2026-01-12",
+          "end": "2026-02-11",
+          "trades": 0,
+          "note": "no trades"
+        },
+        {
+          "fold": 5,
+          "start": "2025-12-13",
+          "end": "2026-01-12",
+          "trades": 0,
+          "note": "no trades"
+        },
+        {
+          "fold": 6,
+          "start": "2025-11-13",
+          "end": "2025-12-13",
+          "trades": 0,
+          "note": "no trades"
         }
       ],
       "aggregate": {
-        "n_folds_with_trades": 4,
-        "trades_per_fold": {
-          "n": 4,
-          "mean": 3.5,
-          "stdev": 0.866,
-          "min": 2,
-          "max": 4
-        },
-        "profit_factor": {
-          "n": 4,
-          "mean": 0.415,
-          "stdev": 0.427,
-          "min": 0.0,
-          "max": 0.975
-        },
-        "win_rate_pct": {
-          "n": 4,
-          "mean": 18.75,
-          "stdev": 20.729,
-          "min": 0.0,
-          "max": 50.0
-        },
-        "sharpe": {
-          "n": 4,
-          "mean": -6.532,
-          "stdev": 4.453,
-          "min": -12.816,
-          "max": -0.223
-        },
-        "max_dd_pct": {
-          "n": 4,
-          "mean": 1.79,
-          "stdev": 0.468,
-          "min": 1.3,
-          "max": 2.55
-        },
-        "annual_return_pct": {
-          "n": 4,
-          "mean": -35.15,
-          "stdev": 27.084,
-          "min": -71.8,
-          "max": 2.4
-        }
+        "n_folds_with_trades": 0
       }
     },
     "ETH": {
       "folds": [
         {
           "fold": 1,
-          "start": "2026-05-05",
+          "start": "2026-04-12",
           "end": "2026-05-12",
-          "trades": 3,
-          "sharpe": -8.405,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 3.33,
-          "annual_return": -75.0
+          "trades": 0,
+          "note": "no trades"
         },
         {
           "fold": 2,
-          "start": "2026-04-28",
-          "end": "2026-05-05",
-          "trades": 3,
-          "sharpe": -4.095,
-          "profit_factor": 0.677,
-          "win_rate": 33.3,
-          "max_dd": 1.67,
-          "annual_return": -33.6
+          "start": "2026-03-13",
+          "end": "2026-04-12",
+          "trades": 0,
+          "note": "no trades"
         },
         {
           "fold": 3,
-          "start": "2026-04-21",
-          "end": "2026-04-28",
-          "trades": 4,
-          "sharpe": -6.725,
-          "profit_factor": 0.296,
-          "win_rate": 25.0,
-          "max_dd": 2.18,
-          "annual_return": -62.7
+          "start": "2026-02-11",
+          "end": "2026-03-13",
+          "trades": 0,
+          "note": "no trades"
         },
         {
           "fold": 4,
-          "start": "2026-04-14",
-          "end": "2026-04-21",
-          "trades": 5,
-          "sharpe": -26.808,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 4.3,
-          "annual_return": -90.1
+          "start": "2026-01-12",
+          "end": "2026-02-11",
+          "trades": 0,
+          "note": "no trades"
+        },
+        {
+          "fold": 5,
+          "start": "2025-12-13",
+          "end": "2026-01-12",
+          "trades": 0,
+          "note": "no trades"
+        },
+        {
+          "fold": 6,
+          "start": "2025-11-13",
+          "end": "2025-12-13",
+          "trades": 0,
+          "note": "no trades"
         }
       ],
       "aggregate": {
-        "n_folds_with_trades": 4,
-        "trades_per_fold": {
-          "n": 4,
-          "mean": 3.75,
-          "stdev": 0.829,
-          "min": 3,
-          "max": 5
-        },
-        "profit_factor": {
-          "n": 4,
-          "mean": 0.243,
-          "stdev": 0.278,
-          "min": 0.0,
-          "max": 0.677
-        },
-        "win_rate_pct": {
-          "n": 4,
-          "mean": 14.575,
-          "stdev": 14.867,
-          "min": 0.0,
-          "max": 33.3
-        },
-        "sharpe": {
-          "n": 4,
-          "mean": -11.508,
-          "stdev": 8.966,
-          "min": -26.808,
-          "max": -4.095
-        },
-        "max_dd_pct": {
-          "n": 4,
-          "mean": 2.87,
-          "stdev": 1.021,
-          "min": 1.67,
-          "max": 4.3
-        },
-        "annual_return_pct": {
-          "n": 4,
-          "mean": -65.35,
-          "stdev": 20.741,
-          "min": -90.1,
-          "max": -33.6
-        }
-      }
-    },
-    "SOL": {
-      "folds": [
-        {
-          "fold": 1,
-          "start": "2026-05-05",
-          "end": "2026-05-12",
-          "trades": 3,
-          "sharpe": 9.463,
-          "profit_factor": 3.292,
-          "win_rate": 66.7,
-          "max_dd": 1.49,
-          "annual_return": 279.2
-        },
-        {
-          "fold": 2,
-          "start": "2026-04-28",
-          "end": "2026-05-05",
-          "trades": 4,
-          "sharpe": -17.988,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 2.68,
-          "annual_return": -78.7
-        },
-        {
-          "fold": 3,
-          "start": "2026-04-21",
-          "end": "2026-04-28",
-          "trades": 3,
-          "sharpe": -13.097,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 1.87,
-          "annual_return": -67.5
-        },
-        {
-          "fold": 4,
-          "start": "2026-04-14",
-          "end": "2026-04-21",
-          "trades": 4,
-          "sharpe": -15.427,
-          "profit_factor": 0.0,
-          "win_rate": 0.0,
-          "max_dd": 3.79,
-          "annual_return": -86.1
-        }
-      ],
-      "aggregate": {
-        "n_folds_with_trades": 4,
-        "trades_per_fold": {
-          "n": 4,
-          "mean": 3.5,
-          "stdev": 0.5,
-          "min": 3,
-          "max": 4
-        },
-        "profit_factor": {
-          "n": 4,
-          "mean": 0.823,
-          "stdev": 1.425,
-          "min": 0.0,
-          "max": 3.292
-        },
-        "win_rate_pct": {
-          "n": 4,
-          "mean": 16.675,
-          "stdev": 28.882,
-          "min": 0.0,
-          "max": 66.7
-        },
-        "sharpe": {
-          "n": 4,
-          "mean": -9.262,
-          "stdev": 10.949,
-          "min": -17.988,
-          "max": 9.463
-        },
-        "max_dd_pct": {
-          "n": 4,
-          "mean": 2.458,
-          "stdev": 0.881,
-          "min": 1.49,
-          "max": 3.79
-        },
-        "annual_return_pct": {
-          "n": 4,
-          "mean": 11.725,
-          "stdev": 154.569,
-          "min": -86.1,
-          "max": 279.2
-        }
+        "n_folds_with_trades": 0
       }
     }
   }

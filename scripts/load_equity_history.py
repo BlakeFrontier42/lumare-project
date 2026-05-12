@@ -42,17 +42,38 @@ INTERVAL_PLAN = [
 
 
 def _pull_yf(symbol: str, interval: str, days: int) -> pd.DataFrame:
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-    df = yf.download(
-        symbol,
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        interval=interval,
-        auto_adjust=True,
-        progress=False,
-        threads=False,
-    )
+    # 1h and 1d work better with period= syntax for deep history.
+    # 5m/15m have a hard 60-day cap which start/end handles fine.
+    if interval in ("1h", "60m") and days > 60:
+        df = yf.download(
+            symbol,
+            period=f"{min(days, 730)}d",
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+    elif interval == "1d":
+        df = yf.download(
+            symbol,
+            period=f"{min(days, 1825)}d",
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        df = yf.download(
+            symbol,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
     if df is None or df.empty:
         return pd.DataFrame()
     # yfinance returns MultiIndex columns for some intervals → flatten
