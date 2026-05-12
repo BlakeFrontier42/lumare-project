@@ -46,6 +46,16 @@ const ASSET_CLASS_UNIVERSE: Record<AssetClass, string[]> = {
 };
 
 // ── Types ────────────────────────────────────────────────────
+interface SymbolKill {
+  active: boolean;
+  pf: number;
+  samples: number;
+  threshold: number;
+  armed_at: string;
+  manual?: boolean;
+  reason?: string;
+}
+
 interface BotStatus {
   running: boolean;
   uptime_seconds: number;
@@ -60,6 +70,13 @@ interface BotStatus {
   signals_generated: number;
   trades_placed: number;
   open_positions: number;
+  // Per-symbol kill switch state — symbols here are NOT trading new entries
+  symbol_kills?: Record<string, SymbolKill>;
+  kill_config?: {
+    min_samples: number;
+    pf_threshold: number;
+    window: number;
+  };
 }
 
 interface BotPerformance {
@@ -915,6 +932,51 @@ export default function BotPage() {
           </div>
         )}
       </div>
+
+      {/* Per-symbol kill switch — symbols disabled by rolling-PF auto-protection */}
+      {status?.symbol_kills && Object.keys(status.symbol_kills).length > 0 && (
+        <div className="mx-4 md:mx-6 mt-4">
+          <div className="bg-red-500/10 border border-red-500/40 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <AlertTriangle className="w-4 h-4 text-red-400" />
+              <span className="text-xs font-heading text-red-300 uppercase tracking-wider">
+                Auto-disabled symbols
+              </span>
+              <span className="text-[10px] text-red-300/70 ml-1">
+                rolling PF below {status.kill_config?.pf_threshold ?? 1.0} threshold
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(status.symbol_kills).map(([sym, kill]) => (
+                <div
+                  key={sym}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded bg-red-500/10 border border-red-500/30 text-xs"
+                >
+                  <span className="font-mono font-bold text-red-300">{sym}</span>
+                  <span className="text-red-200/70">PF {kill.pf.toFixed(2)}</span>
+                  <span className="text-red-200/50 text-[10px]">
+                    {kill.samples} trades{kill.manual ? " · manual" : ""}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await fetch(
+                          `${API}/api/bot/symbols/${encodeURIComponent(sym)}/reset`,
+                          { method: "POST" },
+                        );
+                        await fetchAll();
+                      } catch { /* swallow */ }
+                    }}
+                    className="ml-1 text-[10px] text-red-300 hover:text-red-200 underline"
+                  >
+                    re-enable
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 p-2 mx-4 md:mx-6 mt-4 bg-[#0a0a0a] rounded-lg w-fit overflow-x-auto">
